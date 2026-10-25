@@ -24,6 +24,25 @@ write_pid() {
 }
 read_pid() { cat "$(pid_file "$1")" 2>/dev/null || echo ""; }
 
+# --- Process identity persistence (R3: PID reuse protection) ---
+identity_file() { echo "${PID_DIR}/$1.identity.json"; }
+save_identity() {
+    local name="$1" pid="$2"
+    local uid exe start_time cmdline
+    uid=$(awk '/^Uid:/{print $2}' "/proc/${pid}/status" 2>/dev/null || echo "0")
+    start_time=$(awk '{print $22}' "/proc/${pid}/stat" 2>/dev/null || echo "0")
+    exe=$(readlink -f "/proc/${pid}/exe" 2>/dev/null || echo "")
+    cmdline=$(tr '\0' ' ' < "/proc/${pid}/cmdline" 2>/dev/null | cut -c1-300 || echo "")
+    local tmpfile
+    tmpfile="$(identity_file "${name}").tmp.$$"
+    printf '{"pid":%s,"uid":%s,"start_time":%s,"exe":"%s","cmdline":"%s"}\n' \
+        "${pid}" "${uid}" "${start_time}" "${exe}" "${cmdline}" > "${tmpfile}"
+    mv "${tmpfile}" "$(identity_file "${name}")"
+}
+read_identity() {
+    cat "$(identity_file "$1")" 2>/dev/null || echo "{}"
+}
+
 # --- Process identity verification ---
 verify_process() {
     local name="$1" expected_pid="$2" expected_exe="$3"
@@ -132,6 +151,7 @@ else
         > "${LOG_DIR}/xvnc.log" 2>&1 &
     XVNC_PID=$!
     write_pid "${XVNC_PID}" "xvnc"
+    save_identity "xvnc" "${XVNC_PID}"
     sleep 3
 
     if verify_process "xvnc" "${XVNC_PID}" "Xvnc"; then
