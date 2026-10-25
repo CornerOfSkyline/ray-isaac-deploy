@@ -1,295 +1,224 @@
+#Requires -Version 5.1
 <#
-.SYNOPSIS
-    Ray + Isaac Sim deployment toolkit - unified control from Windows
-.DESCRIPTION
-    Manages Ray 2.40.0 cluster (A800 + 4090) and Isaac Sim 6.2.0 visualization
-    across SSH tunnels with noVNC browser access.
-.PARAMETER Action
-    Action to perform: doctor, status, start, stop, restart, verify, logs, open-viewer, snapshot
-.PARAMETER Component
-    Target component: ray, visualization, isaacsim, webrtc-client, vnc, novnc, all
-.EXAMPLE
-    .\deploy.ps1 -Action status
-    .\deploy.ps1 -Action start -Component visualization
-    .\deploy.ps1 -Action verify
+.SYNOPSIS Ray + Isaac Sim deployment toolkit v1.1 RC2
+.DESCRIPTION Config-driven control via Python YAML bridge. All values from verified profile.
 #>
-
 param(
-    [Parameter(Position=0)]
-    [ValidateSet("doctor","status","start","stop","restart","verify","logs","open-viewer","snapshot","configure")]
-    [string]$Action = "status",
-
-    [Parameter(Position=1)]
-    [ValidateSet("ray","ray-head","ray-worker","visualization","isaacsim","webrtc-client","vnc","novnc","all")]
-    [string]$Component = "all",
-
-    [switch]$DryRun,
-    [switch]$Force,
-    [string]$Profile = "verified-20261025"
+    [ValidateSet('doctor','status','start','stop','restart','verify','logs','open-viewer','snapshot','configure','install')]
+    [string]$Action = 'status',
+    [ValidateSet('ray','ray-head','ray-worker','visualization','isaacsim','webrtc-client','vnc','novnc','tunnels','all')]
+    [string]$Component = 'all',
+    [ValidateSet('passive','active')][string]$Mode = 'passive',
+    [switch]$DryRun, [switch]$Force, [string]$Profile = 'verified-20261025', [string]$ConfigPath, [int]$TimeoutSec = 30
 )
-
-$ErrorActionPreference = "Stop"
+$ErrorActionPreference = 'Stop'
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ProjectDir = Split-Path -Parent $ScriptDir
 
-# SSH connection strings (from verified profile)
-$A800_SSH = "ssh -p 46885 zjf@117.74.66.77"
-$GPU4090_SSH = "ssh -p 46602 zjf@180.97.68.228"
-$NOVNC_LOCAL_PORT = 16006
-$NOVNC_REMOTE_PORT = 6006
+# === Config Bridge ===
+function Find-Python {
+    foreach ($py in @('python3','python','py')) { try { $null = & $py --version 2>&1; return $py } catch {} }
+    Write-Host "FATAL: No Python found" -ForegroundColor Red; exit 99
+}
+$Py = Find-Python
+$BridgeScript = Join-Path $ProjectDir 'linux\common\config_bridge.py'
+if (-not (Test-Path $BridgeScript)) { Write-Host "FATAL: Bridge not found: $BridgeScript" -ForegroundColor Red; exit 99 }
 
-function Invoke-Remote4090 {
-    param([string]$Command, [int]$TimeoutSec = 15)
-    $fullCmd = "$GPU4090_SSH '$Command'"
-    if ($DryRun) { Write-Host "[DRY RUN] $fullCmd" -ForegroundColor Gray; return "" }
+function Get-ConfigJson {
+    $args = "`"$BridgeScript`""
+    if ($ConfigPath) { $args += " --config `"$ConfigPath`"" } else { $args += " $Profile" }
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $Py; $psi.Arguments = $args; $psi.UseShellExecute = $false
+    $psi.RedirectStandardOutput = $true; $psi.RedirectStandardError = $true; $psi.CreateNoWindow = $true
+    $proc = [System.Diagnostics.Process]::Start($psi)
+    $out = $proc.StandardOutput.ReadToEnd(); $err = $proc.StandardError.ReadToEnd()
+    $proc.WaitForExit(15000) | Out-Null
+    if ($proc.ExitCode -ne 0) { Write-Host "FATAL: Bridge failed:`n$err" -ForegroundColor Red; exit 99 }
+    try { $data = $out | ConvertFrom-Json } catch { Write-Host "FATAL: Bridge JSON parse: $_" -ForegroundColor Red; exit 99 }
+    if (-not $data.valid) { Write-Host "FATAL: Invalid config: $($data.error)" -ForegroundColor Red; exit 99 }
+    return $data
+}
+$C = Get-ConfigJson
+
+# Extract values
+$H = @{}
+$H.A800_H = $C.hosts.a800.ssh_host; $H.A800_P = [int]$C.hosts.a800.ssh_port; $H.A800_U = $C.hosts.a800.ssh_user
+$H.GPU_H = $C.hosts.gpu4090.ssh_host; $H.GPU_P = [int]$C.hosts.gpu4090.ssh_port; $H.GPU_U = $C.hosts.gpu4090.ssh_user
+$H.BPort = [int]$C.hosts.windows.browser_port; $H.NPort = [int]$C.visualization.novnc.port
+$H.VPort = [int]$C.visualization.vnc.port; $H.SigP = [int]$C.isaacsim.signal_port
+$H.StrP = [int]$C.isaacsim.stream_port; $H.IIP = $C.isaacsim.public_ip
+$H.CDP = [int]$C.visualization.webrtc_client.cdp_port; $H.LogD = $C.operations.log_dir
+$H.GCS = [int]$C.ray.head.gcs_port; $H.HIP = $C.ray.head.address; $H.WIP = $C.ray.worker.address
+$H.PhysG = [int]$C.gpu_mapping.physical_gpus
+foreach ($k in $H.Keys) { if (-not $H[$k]) { Write-Host "FATAL: Config missing: $k" -ForegroundColor Red; exit 99 } }
+
+# === SSH ===
+class SshResult { [string]$N; [int]$EC; [string]$Out; [string]$Err; [bool]$TO; [string]$Error
+    [bool] Ok() { return $this.EC -eq 0 -and -not $this.TO -and -not $this.Error } }
+
+function Invoke-SSH {
+    param([string]$Hn,[int]$P,[string]$U,[string]$Cmd,[int]$T=30)
+    if ($DryRun) { Write-Host "[DRYRUN] ssh -p $P ${U}@${Hn} $Cmd" -ForegroundColor Gray; return [SshResult]@{N=$Hn;EC=-1;Error='DryRun'} }
+    $r=[SshResult]@{N=$Hn;EC=-1}
     try {
-        $result = Invoke-Expression $fullCmd 2>&1 | Out-String
-        return $result.Trim()
-    } catch {
-        Write-Host "SSH Error: $_" -ForegroundColor Red
-        return ""
-    }
+        $psi=New-Object System.Diagnostics.ProcessStartInfo
+        $psi.FileName='ssh'
+        $psi.Arguments="-p $P -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o ServerAliveInterval=15 ${U}@${Hn} $Cmd"
+        $psi.UseShellExecute=$false;$psi.RedirectStandardOutput=$true;$psi.RedirectStandardError=$true;$psi.CreateNoWindow=$true
+        $p=[System.Diagnostics.Process]::Start($psi)
+        $sbOut=New-Object System.Text.StringBuilder;$sbErr=New-Object System.Text.StringBuilder
+        $oe=Register-ObjectEvent -InputObject $p -EventName OutputDataReceived -Action {$Event.MessageData.AppendLine($EventArgs.Data)} -MessageData $sbOut
+        $ee=Register-ObjectEvent -InputObject $p -EventName ErrorDataReceived -Action {$Event.MessageData.AppendLine($EventArgs.Data)} -MessageData $sbErr
+        $p.BeginOutputReadLine();$p.BeginErrorReadLine()
+        if(-not $p.WaitForExit($T*1000)){$p.Kill();$r.TO=$true;$r.Error="Timeout ${T}s"}
+        Unregister-Event -SourceIdentifier $oe.Name -ErrorAction SilentlyContinue
+        Unregister-Event -SourceIdentifier $ee.Name -ErrorAction SilentlyContinue
+        $p.WaitForExit(2000)|Out-Null  # flush async buffers
+        $r.EC=$p.ExitCode;$r.Out=$sbOut.ToString().Trim();$r.Err=$sbErr.ToString().Trim();$p.Dispose()
+    }catch{$r.Error=$_.Exception.Message}
+    return $r
 }
 
-function Invoke-RemoteA800 {
-    param([string]$Command, [int]$TimeoutSec = 15)
-    $fullCmd = "$A800_SSH '$Command'"
-    if ($DryRun) { Write-Host "[DRY RUN] $fullCmd" -ForegroundColor Gray; return "" }
+function Send-SSH {
+    param([string]$Hn,[int]$P,[string]$U,[string]$Script,[string]$Interpreter='bash',[int]$T=30)
+    if ($DryRun) { Write-Host "[DRYRUN] ssh ${U}@${Hn} $Interpreter -s << SCRIPT" -ForegroundColor Gray; return [SshResult]@{N=$Hn;EC=-1;Error='DryRun'} }
+    $r=[SshResult]@{N=$Hn;EC=-1}
     try {
-        $result = Invoke-Expression $fullCmd 2>&1 | Out-String
-        return $result.Trim()
-    } catch {
-        Write-Host "SSH Error: $_" -ForegroundColor Red
-        return ""
-    }
+        $psi=New-Object System.Diagnostics.ProcessStartInfo
+        $psi.FileName='ssh'
+        $psi.Arguments="-p $P -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o ServerAliveInterval=15 ${U}@${Hn} '$Interpreter -s'"
+        $psi.UseShellExecute=$false;$psi.RedirectStandardInput=$true;$psi.RedirectStandardOutput=$true;$psi.RedirectStandardError=$true;$psi.CreateNoWindow=$true
+        $p=[System.Diagnostics.Process]::Start($psi)
+        $sbOut=New-Object System.Text.StringBuilder;$sbErr=New-Object System.Text.StringBuilder
+        $oe=Register-ObjectEvent -InputObject $p -EventName OutputDataReceived -Action {$Event.MessageData.AppendLine($EventArgs.Data)} -MessageData $sbOut
+        $ee=Register-ObjectEvent -InputObject $p -EventName ErrorDataReceived -Action {$Event.MessageData.AppendLine($EventArgs.Data)} -MessageData $sbErr
+        $p.BeginOutputReadLine();$p.BeginErrorReadLine()
+        $p.StandardInput.WriteLine($Script);$p.StandardInput.Close()
+        if(-not $p.WaitForExit($T*1000)){$p.Kill();$r.TO=$true;$r.Error="Timeout ${T}s"}
+        Unregister-Event -SourceIdentifier $oe.Name -ErrorAction SilentlyContinue
+        Unregister-Event -SourceIdentifier $ee.Name -ErrorAction SilentlyContinue
+        $p.WaitForExit(2000)|Out-Null
+        $r.EC=$p.ExitCode;$r.Out=$sbOut.ToString().Trim();$r.Err=$sbErr.ToString().Trim();$p.Dispose()
+    }catch{$r.Error=$_.Exception.Message}
+    return $r
 }
+function S4090 { param([string]$C,[int]$T=15) Invoke-SSH -Hn $H.GPU_H -P $H.GPU_P -U $H.GPU_U -Cmd $C -T $T }
+function SA800 { param([string]$C,[int]$T=15) Invoke-SSH -Hn $H.A800_H -P $H.A800_P -U $H.A800_U -Cmd $C -T $T }
+function SshOk { param([ScriptBlock]$B) try{$r=&$B;return($r.Ok()-and$r.Out.Trim()-eq'OK')}catch{return $false} }
+function WC { param([string]$N,[string]$S,[string]$D='')
+    $icon=@{PASS='[PASS]';FAIL='[FAIL]';WARN='[WARN]';UNKNOWN='[????]';RUNNING='[RUN ]';STOPPED='[STOP]'}
+    $col=@{PASS='Green';FAIL='Red';WARN='Yellow';UNKNOWN='Gray';RUNNING='Green';STOPPED='Red'}
+    Write-Host "  $($icon[$S]) $N  $(if($D){$D})" -ForegroundColor $col[$S]
+}
+$ExitCode=0
 
-# === Action Implementations ===
-
+# === Status ===
 function Invoke-Status {
-    Write-Host "`n=== Ray + Isaac Sim Status ===" -ForegroundColor Cyan
-    Write-Host "Timestamp: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')" -ForegroundColor Gray
+    Write-Host "`n=== Status ===" -ForegroundColor Cyan
+    $aO=SshOk{SA800 'echo OK' -T 10};$gO=SshOk{S4090 'echo OK' -T 10}
+    WC 'SSH A800' $(if($aO){'PASS'}else{'FAIL'}); WC 'SSH 4090' $(if($gO){'PASS'}else{'FAIL'})
+    if(-not$gO){$script:ExitCode=2;return}
 
-    # SSH connectivity
-    Write-Host "`n--- SSH Connectivity ---" -ForegroundColor Yellow
-    $a800 = Invoke-RemoteA800 "echo OK"
-    $g4090 = Invoke-Remote4090 "echo OK"
-    Write-Host "  A800:  $(if($a800 -eq 'OK'){'[ONLINE]'}else{'[OFFLINE]'})"
-    Write-Host "  4090:  $(if($g4090 -eq 'OK'){'[ONLINE]'}else{'[OFFLINE]'})"
-
-    # Ray cluster
-    Write-Host "`n--- Ray Cluster (from 4090) ---" -ForegroundColor Yellow
-    $rayStatus = Invoke-Remote4090 "python3 -c 'import ray; ray.init(address=\"127.0.0.2:6379\",ignore_reinit_error=True,logging_level=\"ERROR\"); print(f\"GPU:{ray.cluster_resources().get(\"GPU\",0)} Nodes:{len([n for n in ray.nodes() if n[\"Alive\"]])}\"); ray.shutdown()' 2>/dev/null"
-    Write-Host "  $rayStatus"
+    # Ray
+    Write-Host "`n--- Ray ---" -ForegroundColor Yellow
+    $pyCmd = "import ray; ray.init(address='$($H.HIP):$($H.GCS)',ignore_reinit_error=True,logging_level='ERROR');alive=len([n for n in ray.nodes() if n.get('Alive')]);gpu=ray.cluster_resources().get('GPU',0);print('ALIVE:'+str(alive));print('GPU:'+str(gpu));[print('NODE:'+n.get('NodeName','')+' GPU:'+str(n.get('Resources',{}).get('GPU',0))) for n in ray.nodes() if n.get('Alive')];ray.shutdown()"
+    $rr=S4090 "python3 -c '$pyCmd'" -T 20
+    if($rr.Ok()){
+        if($rr.Out -match 'ALIVE:(\d+)'){$al=[int]$Matches[1];WC 'Nodes' $(if($al-ge2){'PASS'}elseif($al-eq1){'WARN'}else{'FAIL'}) "$al"}
+        if($rr.Out -match 'NODE:([^ ]+) GPU:(\d+)'){WC "Node $($Matches[1])" 'RUNNING' "GPU:$($Matches[2])"}
+    }else{WC 'Ray' 'FAIL' $rr.Error;$script:ExitCode=3}
 
     # GPU
-    Write-Host "`n--- GPU (4090) ---" -ForegroundColor Yellow
-    $gpu = Invoke-Remote4090 "nvidia-smi --query-gpu=index,memory.used,utilization.gpu --format=csv,noheader"
-    Write-Host $gpu
+    Write-Host "`n--- GPU ---" -ForegroundColor Yellow
+    $gr=S4090 'nvidia-smi --query-gpu=index,memory.used,utilization.gpu --format=csv,noheader' -T 10
+    if($gr.Ok()){$gr.Out -split "`n"|%{Write-Host "  $_"}}
 
-    # Key ports
-    Write-Host "`n--- Key Ports (4090) ---" -ForegroundColor Yellow
-    $ports = Invoke-Remote4090 "ss -tlnp 2>/dev/null | grep -E '49100|5901|6006|9222|23002' | awk '{print \$4}' | sort -u"
-    Write-Host $ports
+    # Ports
+    Write-Host "`n--- Ports ---" -ForegroundColor Yellow
+    $pr=S4090 "for p in $($H.SigP) $($H.VPort) $($H.NPort) $($H.CDP);do ss -tlnp 2>/dev/null|grep -q `":`$p `"&&echo `$p:OK||echo `$p:MISSING;done" -T 10
+    $pr.Out -split "`n"|%{if($_ -match '^(\d+):(\w+)'){WC "Port $($Matches[1])" $(if($Matches[2]-eq'OK'){'PASS'}else{'FAIL'})}}
 
-    # Visualization processes
-    Write-Host "`n--- Visualization Processes (4090) ---" -ForegroundColor Yellow
-    $procs = Invoke-Remote4090 "for p in kit/kit 'Xvnc' websockify isaacsim-webrtc; do c=`$(pgrep -c -f \"`$p\" 2>/dev/null || echo 0); echo \"  `$p: `$c\"; done"
-    Write-Host $procs
-
-    # Stream status
-    Write-Host "`n--- WebRTC Stream ---" -ForegroundColor Yellow
-    $stream = Invoke-Remote4090 "grep 'Stream started.*success' /tmp/isaacsim_logs/webrtc-client.log 2>/dev/null | tail -1 || echo '  No success entry'"
-    Write-Host "  $stream"
-
-    # Windows tunnel
-    Write-Host "`n--- Windows SSH Tunnel ---" -ForegroundColor Yellow
-    $tunnel = netstat -ano 2>$null | Select-String "16006"
-    if ($tunnel) { Write-Host "  Tunnel active on :16006" } else { Write-Host "  Tunnel NOT active" }
+    # WebRTC
+    Write-Host "`n--- WebRTC ---" -ForegroundColor Yellow
+    $sr=S4090 "pgrep -c isaacsim-webrtc 2>/dev/null||echo 0;grep -c 'Stream started.*success' $($H.LogD)/webrtc-client.log 2>/dev/null||echo 0;ss -ulnp 2>/dev/null|grep -c ':$($H.StrP) '" -T 10
+    $sl=$sr.Out -split "`n"
+    WC 'Client' $(if([int]$sl[0]-gt0){'RUNNING'}else{'STOPPED'})
+    $streamOk=[int]$sl[1]-gt0; $udpOk=[int]$sl[2]-gt0
+    if($streamOk-and$udpOk){WC 'Stream' 'PASS'}elseif([int]$sl[0]-gt0){WC 'Stream' 'UNKNOWN' 'no frame stats'}else{WC 'Stream' 'FAIL'}
 }
 
-function Invoke-Doctor {
-    Write-Host "`n=== Full System Diagnostic ===" -ForegroundColor Cyan
-
-    # Run the Python diagnostics module on 4090
-    $diag = Invoke-Remote4090 "python3 -c '
-import json
-d = {}
-d[\"ssh\"] = \"OK\"
-d[\"gpu\"] = \"$(nvidia-smi --query-gpu=index,memory.used,utilization.gpu --format=csv,noheader | tr '\''\n'\'' ';')\""
-d[\"ports\"] = \"$(ss -tlnp | grep -E '49100|5901|6006|9222|23002|23003' | awk '{print \$4}' | tr '\''\n'\'' ';')\""
-d[\"raylet\"] = $(pgrep -c raylet)
-d[\"kit\"] = $(pgrep -c 'kit/kit')
-d[\"vnc\"] = $(pgrep -c Xvnc)
-d[\"webrtc\"] = $(pgrep -c isaacsim-webrtc)
-d[\"stream\"] = \"$(grep -c 'Stream started.*success' /tmp/isaacsim_logs/webrtc-client.log 2>/dev/null || echo 0)\""
-d[\"nvenc\"] = $(ldconfig -p | grep -c nvidia-encode)
-print(json.dumps(d))
-' 2>/dev/null"
-    Write-Host $diag
-}
-
-function Invoke-StartVisualization {
-    Write-Host "`n=== Starting Visualization Stack ===" -ForegroundColor Cyan
-
-    # 1. Xvnc
-    Write-Host "[1/5] Xvnc..." -ForegroundColor Yellow
-    $vncRunning = Invoke-Remote4090 "pgrep -c Xvnc"
-    if ($vncRunning -eq "0") {
-        Write-Host "  Starting Xvnc..."
-        Invoke-Remote4090 "export LD_LIBRARY_PATH=/home/zjf/tigervnc/usr/lib:`$LD_LIBRARY_PATH; nohup /home/zjf/tigervnc/usr/bin/Xvnc :1 -geometry 1920x1080 -depth 24 -SecurityTypes None -AlwaysShared -localhost=1 -ac > /home/zjf/.local/state/ray-isaac-deploy/logs/xvnc.log 2>&1 &"
-    } else {
-        Write-Host "  Already running ($vncRunning instances)"
-    }
-
-    # 2. noVNC
-    Write-Host "[2/5] noVNC..." -ForegroundColor Yellow
-    $novncRunning = Invoke-Remote4090 "pgrep -c websockify"
-    if ($novncRunning -gt "1") {
-        # Clean up dupes first
-        Invoke-Remote4090 "pgrep websockify | tail -n +2 | xargs -r kill 2>/dev/null"
-    }
-    if ($novncRunning -eq "0") {
-        Invoke-Remote4090 "nohup /home/zjf/.local/bin/websockify --web=/home/zjf/noVNC-1.5.0 6006 127.0.0.1:5901 > /home/zjf/.local/state/ray-isaac-deploy/logs/novnc.log 2>&1 &"
-    }
-
-    # 3. Isaac Sim
-    Write-Host "[3/5] Isaac Sim..." -ForegroundColor Yellow
-    $isaacRunning = Invoke-Remote4090 "pgrep -c 'kit/kit'"
-    if ($isaacRunning -eq "0") {
-        Invoke-Remote4090 "cd /home/zjf/isaacsim; nohup ./isaac-sim.streaming.sh --allow-root --/exts/omni.kit.livestream.app/primaryStream/signalPort=49100 --/exts/omni.kit.livestream.app/primaryStream/streamPort=47998 --/exts/omni.kit.livestream.app/primaryStream/publicIp=192.168.0.12 > /home/zjf/.local/state/ray-isaac-deploy/logs/isaac-stream.log 2>&1 &"
-        Write-Host "  Started (waiting ~30s for load)"
-        Start-Sleep -Seconds 30
-    } else {
-        Write-Host "  Already running"
-    }
-
-    # 4. WebRTC Client
-    Write-Host "[4/5] WebRTC Client..." -ForegroundColor Yellow
-    $clientRunning = Invoke-Remote4090 "pgrep -c isaacsim-webrtc"
-    if ($clientRunning -eq "0") {
-        $clientDir = "/home/zjf/isaacsim-webrtc-streaming-client/opt/Isaac Sim WebRTC Streaming Client"
-        Invoke-Remote4090 "cd `'$clientDir`'; nohup env DISPLAY=:1 `'$clientDir/isaacsim-webrtc-streaming-client`' --no-sandbox --disable-gpu --disable-dev-shm-usage --ozone-platform=x11 --remote-debugging-port=9222 > /home/zjf/.local/state/ray-isaac-deploy/logs/webrtc-client.log 2>&1 &"
-        Start-Sleep -Seconds 10
-    } else {
-        Write-Host "  Already running"
-    }
-
-    # 5. CDP Auto-connect
-    Write-Host "[5/5] CDP Auto-connect..." -ForegroundColor Yellow
-    Invoke-Remote4090 "sleep 5; python3 /home/zjf/auto_connect_webrtc.py 192.168.0.12 49100 47998 1920 1080 2>&1"
-
-    Write-Host "`nVisualization started." -ForegroundColor Green
-}
-
-function Invoke-StopVisualization {
-    Write-Host "`n=== Stopping Visualization Stack ===" -ForegroundColor Cyan
-    # Stop in reverse order: client -> isaac -> novnc -> vnc
-    foreach ($comp in @("isaacsim-webrtc", "kit/kit", "websockify", "Xvnc")) {
-        $pids = Invoke-Remote4090 "pgrep -f '$comp' 2>/dev/null"
-        if ($pids) {
-            Write-Host "Stopping $comp..." -ForegroundColor Yellow
-            Invoke-Remote4090 "pgrep -f '$comp' | xargs -r kill -TERM 2>/dev/null; sleep 2; pgrep -f '$comp' | xargs -r kill -9 2>/dev/null"
-        }
-    }
-    Write-Host "Visualization stopped." -ForegroundColor Green
-}
-
-function Invoke-OpenViewer {
-    Write-Host "`n=== Opening Isaac Sim Viewer ===" -ForegroundColor Cyan
-
-    # Check for existing tunnel
-    $existing = netstat -ano 2>$null | Select-String "16006.*LISTEN"
-    if (-not $existing) {
-        Write-Host "Establishing SSH tunnel..."
-        Start-Process -FilePath "ssh" -ArgumentList "-NT", "-p", "46602", "-L", "127.0.0.1:16006:127.0.0.1:6006", "-o", "ExitOnForwardFailure=yes", "-o", "ServerAliveInterval=30", "zjf@180.97.68.228" -WindowStyle Hidden
-        Start-Sleep -Seconds 3
-    }
-
-    # Verify
-    try {
-        $response = Invoke-WebRequest -Uri "http://127.0.0.1:16006/vnc.html" -UseBasicParsing -TimeoutSec 5
-        Write-Host "noVNC accessible (HTTP $($response.StatusCode))" -ForegroundColor Green
-    } catch {
-        Write-Host "noVNC not reachable - check tunnel" -ForegroundColor Red
-        return
-    }
-
-    # Open browser
-    $url = "http://127.0.0.1:16006/vnc.html?autoconnect=1&resize=remote"
-    Write-Host "Opening: $url" -ForegroundColor Cyan
-    Start-Process $url
-}
-
+# === Verify ===
 function Invoke-Verify {
-    Write-Host "`n=== End-to-End Verification ===" -ForegroundColor Cyan
+    Write-Host "`n=== Verify ($Mode) ===" -ForegroundColor Cyan
+    $fail=0; $total=0
+    function V { param([string]$N,[bool]$C) $script:total++; if($C){WC $N 'PASS'}else{WC $N 'FAIL';$script:fail++;$script:ExitCode=1} }
+    if($Mode -eq 'active' -and -not $Force){Write-Host "Active verify requires -Force" -ForegroundColor Red;exit 10}
 
-    $checks = @()
+    V 'SSH A800' (SshOk{SA800 'echo OK' -T 10})
+    V 'SSH 4090' (SshOk{S4090 'echo OK' -T 10})
+    if(-not(SshOk{S4090 'echo OK' -T 10})){$script:ExitCode=2;return}
 
-    # 1. SSH
-    $a800 = Invoke-RemoteA800 "echo OK"
-    $g4090 = Invoke-Remote4090 "echo OK"
-    $checks += @{Name="SSH A800"; Pass=($a800 -eq "OK")}
-    $checks += @{Name="SSH 4090"; Pass=($g4090 -eq "OK")}
+    $rr=S4090 "python3 -c 'import ray;ray.init(address=`"$($H.HIP):$($H.GCS)`",ignore_reinit_error=True,logging_level=`"ERROR`");print(len([n for n in ray.nodes() if n.get(`"Alive`")]));ray.shutdown()'" -T 20
+    $alive=if($rr.Out-match'^\d+$'){[int]$rr.Out.Trim()}else{0}
+    V "Ray nodes >=2" ($alive -ge 2)
+    if($alive -lt 2){$script:ExitCode=3}
 
-    # 2. Ray
-    $rayOk = Invoke-Remote4090 "python3 -c 'import ray; ray.init(address=\"127.0.0.2:6379\",ignore_reinit_error=True,logging_level=\"ERROR\"); alive=len([n for n in ray.nodes() if n[\"Alive\"]]); print(alive); ray.shutdown()' 2>/dev/null"
-    $checks += @{Name="Ray Nodes ($rayOk alive)"; Pass=([int]$rayOk -ge 2)}
-
-    # 3. GPU
-    $gpuCount = Invoke-Remote4090 "nvidia-smi -L 2>/dev/null | wc -l"
-    $checks += @{Name="GPUs detected"; Pass=([int]$gpuCount -eq 4)}
-
-    # 4. Visualization layers
-    $vnc = Invoke-Remote4090 "ss -tlnp | grep -c ':5901 '"
-    $checks += @{Name="VNC :5901"; Pass=([int]$vnc -gt 0)}
-
-    $novnc = Invoke-Remote4090 "ss -tlnp | grep -c ':6006 '"
-    $checks += @{Name="noVNC :6006"; Pass=([int]$novnc -gt 0)}
-
-    $sig = Invoke-Remote4090 "ss -tlnp | grep -c ':49100 '"
-    $checks += @{Name="Isaac Sim :49100"; Pass=([int]$sig -gt 0)}
-
-    $stream = Invoke-Remote4090 "grep -c 'Stream started.*success' /tmp/isaacsim_logs/webrtc-client.log 2>/dev/null || echo 0"
-    $checks += @{Name="WebRTC Stream"; Pass=([int]$stream -gt 0)}
-
-    # 5. Windows tunnel
-    $tunnel = netstat -ano 2>$null | Select-String "16006.*LISTEN"
-    $checks += @{Name="Windows Tunnel :16006"; Pass=($tunnel -ne $null)}
-
-    # Report
-    Write-Host ""
-    $passCount = 0
-    foreach ($c in $checks) {
-        $icon = if($c.Pass){"[PASS]"}else{"[FAIL]"}
-        $color = if($c.Pass){"Green"}else{"Red"}
-        Write-Host "  $icon $($c.Name)" -ForegroundColor $color
-        if ($c.Pass) { $passCount++ }
+    if($Mode -eq 'active' -and $Force){
+        $scrPath = Join-Path $ProjectDir 'tests\e2e\verify_ray_active.py'
+        if(Test-Path $scrPath){
+            $scr = Get-Content $scrPath -Raw
+            # Pass head_ip, gcs_port, worker_ip via stdin script + command args
+            $scrWithArgs = "import sys; sys.argv = ['verify_ray_active.py', '$($H.HIP)', '$($H.GCS)', '$($H.WIP)']`n" + $scr
+            $ar2 = Send-SSH -Hn $H.GPU_H -P $H.GPU_P -U $H.GPU_U -Script $scrWithArgs -Interpreter 'python3 -s' -T 120
+            if($ar2.Ok()){WC 'Ray GPU verify' 'PASS'}else{WC 'Ray GPU verify' 'FAIL' "$($ar2.Err)"}
+        } else { WC 'Ray verify script' 'FAIL' 'script not found' }
     }
-    Write-Host "`n  Result: $passCount/$($checks.Count) checks passed" -ForegroundColor $(if($passCount -eq $checks.Count){"Green"}else{"Yellow"})
+
+    $pr=S4090 "ss -tlnp 2>/dev/null" -T 10
+    $open=$pr.Out -split "`n"
+    foreach($p in @($H.VPort,$H.NPort,$H.SigP)){V "Port $p" ($open-match":$p ")}
+    V "Tunnel :$($H.BPort)" (!!(netstat -ano 2>$null|Select-String "$($H.BPort).*LISTEN"))
+
+    Write-Host "`n  Verified: $($total-$fail)/$total passed" -ForegroundColor $(if($fail-eq0){'Green'}else{'Yellow'})
 }
 
-# === Main Dispatch ===
-
+# === Dispatch ===
 switch ($Action) {
-    "status"     { Invoke-Status }
-    "doctor"     { Invoke-Doctor }
-    "snapshot"   { Write-Host "Snapshot: baseline/working_baseline.json already captured"; Invoke-Status }
-    "start"      {
-        if ($Component -in @("visualization","vnc","novnc","isaacsim","webrtc-client","all")) {
-            Invoke-StartVisualization
+    'status'     { Invoke-Status }
+    'verify'     { Invoke-Verify }
+    'doctor'     { Invoke-Status; if($Mode -eq 'active'){Invoke-Verify} }
+    'open-viewer' {
+        if (-not (netstat -ano 2>$null | Select-String "$($H.BPort).*LISTEN")) {
+            $a = @('-NT','-p',"$($H.GPU_P)",'-L',"127.0.0.1:$($H.BPort):127.0.0.1:$($H.NPort)",'-o','ExitOnForwardFailure=yes','-o','ServerAliveInterval=30',"$($H.GPU_U)@$($H.GPU_H)")
+            Start-Process -FilePath 'ssh' -ArgumentList $a -WindowStyle Hidden; Start-Sleep -Seconds 2
         }
-        if ($Component -in @("ray","ray-head","ray-worker","all")) {
-            Write-Host "Ray component: Use A800/4090 specific scripts" -ForegroundColor Yellow
+        Start-Process "http://127.0.0.1:$($H.BPort)/vnc.html?autoconnect=1&resize=remote"
+    }
+    'start' {
+        if ($Component -in @('visualization','all')) { S4090 "bash /home/zjf/ray-isaac-deploy/linux/visualization/start-visualization.sh 2>&1" -T 120|%{Write-Host $_} }
+        if ($Component -in @('ray','ray-head')) { SA800 "bash /home/zjf/ray-isaac-deploy/linux/ray/cluster.sh start-head" -T 60 | Out-Null }
+        if ($Component -in @('ray','ray-worker')) { SA800 "bash /home/zjf/ray-isaac-deploy/linux/ray/cluster.sh start-worker" -T 60 | Out-Null }
+        if ($Component -in @('tunnels','ray')) { SA800 "bash /home/zjf/ray-isaac-deploy/linux/ray/cluster.sh start-tunnels" -T 30 | Out-Null }
+    }
+    'stop' {
+        if ($Component -in @('visualization','all')) { S4090 "bash /home/zjf/ray-isaac-deploy/linux/visualization/stop-visualization.sh 2>&1" -T 60|%{Write-Host $_} }
+        if ($Component -in @('ray','ray-head','ray-worker','all')) {
+            if ($Force) { SA800 "bash /home/zjf/ray-isaac-deploy/linux/ray/cluster.sh stop-cluster" -T 60 | Out-Null }
+            else { Write-Host "Ray stop requires -Force" -ForegroundColor Yellow; exit 10 }
         }
     }
-    "stop"       {
-        if ($Component -in @("visualization","vnc","novnc","isaacsim","webrtc-client","all")) {
-            Invoke-StopVisualization
-        }
+    'install' {
+        if ($DryRun) {
+            Write-Host "`n=== Install Plan ===" -ForegroundColor Cyan
+            $chk = S4090 "echo ---;python3 --version 2>&1;ldconfig -p|grep -c nvidia-encode;ls /home/zjf/isaacsim/VERSION 2>/dev/null||echo ISAAC_MISSING;ls /home/zjf/noVNC-1.5.0/vnc.html 2>/dev/null||echo NOVNC_MISSING;which websockify 2>/dev/null||echo WS_MISSING;python3 -c 'import ray;print(ray.__version__)' 2>/dev/null||echo RAY_MISSING" -T 15
+            Write-Host $chk.Out
+            if ($chk.Out -match 'ISAAC_MISSING'){Write-Host "  [NEED] Isaac Sim 6.2.0" -ForegroundColor Yellow}
+            if ($chk.Out -match 'NOVNC_MISSING'){Write-Host "  [NEED] noVNC 1.5.0" -ForegroundColor Yellow}
+        } else { Write-Host "Use -DryRun first" -ForegroundColor Yellow }
     }
-    "verify"     { Invoke-Verify }
-    "open-viewer" { Invoke-OpenViewer }
-    "logs"       { Write-Host "Logs on 4090: /home/zjf/.local/state/ray-isaac-deploy/logs/" -ForegroundColor Cyan }
-    default      { Write-Host "Unknown action: $Action" -ForegroundColor Red }
+    'configure' { Write-Host "Profile: $Profile"; $C | ConvertTo-Json -Depth 2 }
+    'logs' { Write-Host "Logs: $($H.LogD)" -ForegroundColor Cyan }
+    'snapshot' { Write-Host "Baseline: baseline/working_baseline.json"; Invoke-Status }
+    default { Write-Host "UNSUPPORTED: $Action" -ForegroundColor Red; exit 99 }
 }
+exit $ExitCode

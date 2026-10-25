@@ -1,0 +1,109 @@
+# Ray-Isaac-Deploy Example Configuration
+# Copy to profiles/<your-profile>.yaml and customize.
+
+hosts:
+  windows:
+    role: controller
+    browser_port: 16006
+  a800:
+    role: ray_head
+    ssh_host: "<A800_IP_OR_HOSTNAME>"
+    ssh_port: 46885
+    ssh_user: "<USER>"
+  gpu4090:
+    role: ray_worker_and_isaac_sim
+    ssh_host: "<4090_IP_OR_HOSTNAME>"
+    ssh_port: 46602
+    ssh_user: "<USER>"
+
+ray:
+  version: "2.40.0"
+  head:
+    address: "127.0.0.2"
+    gcs_port: 6379
+    node_manager_port: 22002
+    object_manager_port: 22003
+    cpu_count: 4
+    gpu_count: 8
+    custom_resources:
+      head_A800: 1
+      accelerator_type:A800: 1
+  worker:
+    address: "127.0.0.3"
+    node_manager_port: 23002
+    object_manager_port: 23003
+    worker_rpc_start: 23100
+    worker_rpc_end: 23131
+    cpu_count: 4
+    gpu_count: 1
+    custom_resources:
+      worker_4090: 1
+      accelerator_type:G: 1
+
+ssh_tunnels:
+  worker_to_head:
+    - name: gcs
+      local_port: 6379
+      remote_host: "127.0.0.2"
+      remote_port: 6379
+      description: "Worker -> Head GCS"
+  head_to_worker:
+    - name: worker_rpc_core
+      local_ports: "23002-23007"
+      remote_host: "127.0.0.3"
+      remote_ports: "23002-23007"
+    - name: worker_rpc_pool
+      local_ports: "23100-23131"
+      remote_host: "127.0.0.3"
+      remote_ports: "23100-23131"
+  windows_novnc:
+    local_port: 16006
+    remote_port: 6006
+
+isaacsim:
+  install_path: "/home/<USER>/isaacsim"
+  version: "6.2.0"
+  signal_port: 49100
+  stream_port: 47998
+  public_ip: "<CONTAINER_ETH0_IP>"
+  gpu_index: 0
+  app_loaded_indicator: "Isaac Sim Full Streaming App is loaded"
+
+visualization:
+  vnc:
+    binary: "/home/<USER>/tigervnc/usr/bin/Xvnc"
+    display: ":1"
+    port: 5901
+    geometry: "1920x1080"
+    depth: 24
+    library_path: "/home/<USER>/tigervnc/usr/lib"
+    extra_args:
+      - "-SecurityTypes"
+      - "None"
+      - "-AlwaysShared"
+      - "-localhost=1"
+      - "-ac"
+  novnc:
+    path: "/home/<USER>/noVNC-1.5.0"
+    websockify: "/home/<USER>/.local/bin/websockify"
+    port: 6006
+  webrtc_client:
+    path: "/home/<USER>/isaacsim-webrtc-streaming-client/opt/Isaac Sim WebRTC Streaming Client/isaacsim-webrtc-streaming-client"
+    cdp_port: 9222
+    electron_flags:
+      - "--no-sandbox"
+      - "--disable-gpu"
+      - "--disable-dev-shm-usage"
+      - "--ozone-platform=x11"
+      - "--remote-debugging-port=9222"
+
+operations:
+  pid_dir: "/home/<USER>/.local/state/ray-isaac-deploy"
+  log_dir: "/home/<USER>/.local/state/ray-isaac-deploy/logs"
+  health_check_timeout: 120
+  max_retries: 3
+
+gpu_mapping:
+  physical_gpus: 4
+  ray_declared_gpus: 1
+  isaac_sim_uses_gpu: 0

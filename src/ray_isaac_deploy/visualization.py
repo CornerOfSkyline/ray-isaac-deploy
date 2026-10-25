@@ -152,28 +152,15 @@ class VisualizationStack:
         if not self._is_port_listening(self.config.webrtc_cdp_port):
             return {"name": "cdp-auto-connect", "status": "cdp_not_ready"}
 
-        script = self.config.webrtc_auto_connect_script
-        if not script or not os.path.exists(script):
-            # Fall back to inline Python CDP connect
-            result = self._remote(
-                f"python3 -c \""
-                f"import json,asyncio,urllib.request,websockets;"
-                f"tabs=json.load(urllib.request.urlopen('http://127.0.0.1:{self.config.webrtc_cdp_port}/json'));"
-                f"page=next(t for t in tabs if t.get('type')=='page');"
-                f"async def m():"
-                f"  async with websockets.connect(page['webSocketDebuggerUrl']) as w:"
-                f"    expr='localStorage.setItem(\\\"server\\\",\\\"{self.config.isaac_public_ip}\\\");"
-                f"localStorage.setItem(\\\"signalPort\\\",\\\"{self.config.isaac_signal_port}\\\");"
-                f"localStorage.setItem(\\\"streamPort\\\",\\\"{self.config.isaac_stream_port}\\\");"
-                f"location.search=\\\\"?server={self.config.isaac_public_ip}&signalPort={self.config.isaac_signal_port}&streamPort={self.config.isaac_stream_port}&autoConnect\\\"';"
-                f"    await w.send(json.dumps({{'id':1,'method':'Runtime.evaluate','params':{{'expression':expr}}}}));"
-                f"    print(json.loads(await w.recv()));"
-                f"asyncio.get_event_loop().run_until_complete(m())\"",
-                timeout=15
-            )
-        else:
-            result = self._remote(f"python3 {script} {self.config.isaac_public_ip} "
-                                 f"{self.config.isaac_signal_port} {self.config.isaac_stream_port} 1920 1080")
+        script = "/home/zjf/auto_connect_webrtc.py"
+        if not os.path.isfile(script):
+            script = "/home/zjf/click_connect.py"
+
+        result = self._remote(
+            f"python3 {script} {self.config.isaac_public_ip} "
+            f"{self.config.isaac_signal_port} {self.config.isaac_stream_port} 1920 1080",
+            timeout=15
+        )
 
         return {"name": "cdp-auto-connect", "status": "executed", "output": result.stdout[:200]}
 

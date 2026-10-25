@@ -8,15 +8,17 @@ from typing import Optional
 
 @dataclass
 class ProcessEntry:
-    """Tracked process entry."""
+    """Tracked process entry with full identity for PID reuse protection."""
     name: str
     pid: int
     start_time: float
-    exe: str
-    cmdline: str
-    work_dir: str
-    log_path: str
-    status: str = "unknown"  # running, stopped, failed
+    proc_start_time: int = 0   # /proc/PID/stat starttime (jiffies)
+    uid: int = 0                # /proc/PID/status Uid
+    exe: str = ""              # /proc/PID/exe target
+    cmdline: str = ""          # /proc/PID/cmdline
+    work_dir: str = ""
+    log_path: str = ""
+    status: str = "unknown"    # running, stopped, failed
 
     def is_alive(self) -> bool:
         try:
@@ -73,30 +75,15 @@ class ProcessRegistry:
         return self._entries.get(name)
 
     def stop(self, name: str, force: bool = False):
-        """Stop a tracked process. SIGTERM first, SIGKILL if force."""
+        """DISABLED: Python stop() bypasses identity verification.
+        Use Shell scripts for production (stop-visualization.sh validates PID/UID/start_time/exe/cmdline).
+        Returns UNSUPPORTED - never sends signals."""
+        import logging
         entry = self._entries.get(name)
-        if entry is None:
-            return False
-
-        signal = 9 if force else 15
-        try:
-            os.kill(entry.pid, signal)
-            if not force:
-                # Wait for graceful shutdown
-                for _ in range(30):
-                    if not entry.is_alive():
-                        entry.status = "stopped"
-                        self.save()
-                        return True
-                    time.sleep(1)
-                # Force kill if still alive
-                os.kill(entry.pid, 9)
-        except (OSError, ProcessLookupError):
-            pass
-
-        entry.status = "stopped"
-        self.save()
-        return True
+        if entry is not None:
+            logging.getLogger(__name__).warning(
+                "Python stop() DISABLED for '%s' (PID %d). Use Shell scripts.", name, entry.pid)
+        return False
 
     def cleanup_stale(self):
         """Remove entries for processes that are no longer running."""
