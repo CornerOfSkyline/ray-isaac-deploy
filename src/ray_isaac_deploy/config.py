@@ -108,22 +108,25 @@ class ClusterConfig:
         missing = [k for k in self.REQUIRED_TOP_KEYS if k not in self._raw]
         if missing:
             raise ConfigError(f"Missing required config sections: {missing}")
-        # Check port uniqueness
+        # Check port uniqueness across all services
         ports = {}
-        for section, fields in [
-            ('ray.head', ['gcs_port', 'node_manager_port', 'object_manager_port']),
-            ('ray.worker', ['node_manager_port', 'object_manager_port']),
-            ('isaacsim', ['signal_port', 'stream_port']),
-            ('visualization.vnc', ['port']),
-            ('visualization.novnc', ['port']),
-            ('visualization.webrtc_client', ['cdp_port']),
+        for path, field_name in [
+            (['ray', 'head', 'gcs_port'], 'ray.head.gcs_port'),
+            (['ray', 'head', 'node_manager_port'], 'ray.head.node_manager_port'),
+            (['ray', 'head', 'object_manager_port'], 'ray.head.object_manager_port'),
+            (['ray', 'worker', 'node_manager_port'], 'ray.worker.node_manager_port'),
+            (['ray', 'worker', 'object_manager_port'], 'ray.worker.object_manager_port'),
+            (['isaacsim', 'signal_port'], 'isaacsim.signal_port'),
+            (['isaacsim', 'stream_port'], 'isaacsim.stream_port'),
+            (['visualization', 'vnc', 'port'], 'visualization.vnc.port'),
+            (['visualization', 'novnc', 'port'], 'visualization.novnc.port'),
+            (['visualization', 'webrtc_client', 'cdp_port'], 'visualization.webrtc_client.cdp_port'),
         ]:
-            for field in fields:
-                val = self.get(*([section] + [field]), default=None)
-                if val is not None:
-                    if val in ports:
-                        raise ConfigError(f"Port {val} conflict: '{field}' and '{ports[val]}'")
-                    ports[val] = f"{section}.{field}"
+            val = self.get(*path, default=None)
+            if val is not None and val != 0:
+                if val in ports:
+                    raise ConfigError(f"Port {val} conflict: '{field_name}' and '{ports[val]}'")
+                ports[val] = field_name
 
     # --- Accessors ---
     def get(self, *keys, default=None):
