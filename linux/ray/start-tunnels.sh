@@ -74,9 +74,10 @@ run_adapter() {
 # ============================================================
 run_standalone() {
     local action="${1:-start}"
-    warn "Standalone mode: tunnel generation from profile is under development"
-    warn "Using adapter mode as fallback"
-    run_adapter "${action}"
+    echo "UNSUPPORTED: standalone Ray tunnel deployment is not yet implemented." >&2
+    echo "Use adapter mode with legacy ~/workspace/ray_ws/ray_ssh_cluster/ instead." >&2
+    echo "Set MODE=adapter and ensure the legacy cluster directory exists." >&2
+    exit 10
 }
 
 # ============================================================

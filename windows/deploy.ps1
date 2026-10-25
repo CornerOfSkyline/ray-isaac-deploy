@@ -26,25 +26,36 @@ $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ProjectDir = Split-Path -Parent $ScriptDir
 
 # ============================================================
-# Config loading via Python bridge (G4-01: fail-closed, no hardcoded fallbacks)
+# Config loading via Python bridge (R1: Python auto-detection, -ConfigPath)
 # ============================================================
 $bridgeScript = Join-Path $ProjectDir 'linux\common\config_bridge.py'
 if (-not (Test-Path $bridgeScript)) {
     Write-Host "FATAL: Config bridge not found: $bridgeScript" -ForegroundColor Red; exit 99
 }
 
+function Find-Python {
+    foreach ($py in @('python3', 'python', 'py')) {
+        try { $null = & $py --version 2>&1; return $py } catch {}
+    }
+    Write-Host "FATAL: No Python interpreter found (tried python3, python, py)" -ForegroundColor Red; exit 99
+}
+$PythonBin = Find-Python
+
 function Get-ConfigJson {
+    $bridgeArgs = "`"$bridgeScript`""
+    if ($ConfigPath) { $bridgeArgs += " --config `"$ConfigPath`"" }
+    else { $bridgeArgs += " $Profile" }
+
     $psi = New-Object System.Diagnostics.ProcessStartInfo
-    $psi.FileName = 'python3'; $psi.Arguments = "`"$bridgeScript`" $Profile"
+    $psi.FileName = $PythonBin; $psi.Arguments = $bridgeArgs
     $psi.UseShellExecute = $false; $psi.RedirectStandardOutput = $true
     $psi.RedirectStandardError = $true; $psi.CreateNoWindow = $true
     $proc = [System.Diagnostics.Process]::Start($psi)
     $stdout = $proc.StandardOutput.ReadToEnd()
     $stderr = $proc.StandardError.ReadToEnd()
-    $proc.WaitForExit(10000) | Out-Null
+    $proc.WaitForExit(15000) | Out-Null
     if ($proc.ExitCode -ne 0) {
-        Write-Host "FATAL: Config bridge failed (exit $($proc.ExitCode)): $stderr" -ForegroundColor Red
-        exit 99
+        Write-Host "FATAL: Config bridge failed (exit $($proc.ExitCode)): $stderr" -ForegroundColor Red; exit 99
     }
     try { return $stdout | ConvertFrom-Json } catch {
         Write-Host "FATAL: Config JSON parse failed: $_" -ForegroundColor Red; exit 99 }
@@ -53,8 +64,8 @@ function Get-ConfigJson {
 $config = Get-ConfigJson
 if (-not $config.valid) { Write-Host "FATAL: Invalid config: $($config.error)" -ForegroundColor Red; exit 99 }
 
-# Extract config values (all from validated YAML, no defaults)
-$cfg = @{
+# Extract config (R3: add remote project path from config)
+$cfg = @{}
     A800_Host   = $config.hosts.a800.ssh_host
     A800_Port   = [int]$config.hosts.a800.ssh_port
     A800_User   = $config.hosts.a800.ssh_user

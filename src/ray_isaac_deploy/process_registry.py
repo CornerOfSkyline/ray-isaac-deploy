@@ -8,15 +8,17 @@ from typing import Optional
 
 @dataclass
 class ProcessEntry:
-    """Tracked process entry."""
+    """Tracked process entry with full identity for PID reuse protection."""
     name: str
     pid: int
     start_time: float
-    exe: str
-    cmdline: str
-    work_dir: str
-    log_path: str
-    status: str = "unknown"  # running, stopped, failed
+    proc_start_time: int = 0   # /proc/PID/stat starttime (jiffies)
+    uid: int = 0                # /proc/PID/status Uid
+    exe: str = ""              # /proc/PID/exe target
+    cmdline: str = ""          # /proc/PID/cmdline
+    work_dir: str = ""
+    log_path: str = ""
+    status: str = "unknown"    # running, stopped, failed
 
     def is_alive(self) -> bool:
         try:
