@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ray-isaac-deploy"
+version = "1.0.0"
+description = "Standardized deployment toolkit for Ray 2.40.0 + Isaac Sim 6.2.0 on GPU cloud containers"
+requires-python = ">=3.10"
+dependencies = [
+    "pyyaml>=6.0",
+    "websockets>=10.0",
+]
+
+[project.scripts]
+ray-isaac-deploy = "ray_isaac_deploy.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
