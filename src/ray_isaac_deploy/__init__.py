@@ -5,10 +5,12 @@ Architecture:
   Visualization: Isaac Sim -> local WebRTC -> Xvnc -> noVNC -> SSH -> Browser
 """
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
-from .config import ClusterConfig, load_config
+from .config import ClusterConfig, ConfigError, load_config
 from .diagnostics import Diagnostics
 from .process_registry import ProcessRegistry
 from .visualization import VisualizationStack
 from .ssh import TunnelManager
+from .gpu import get_gpu_info, check_nvenc, check_vulkan
+from .cli import main as cli_main

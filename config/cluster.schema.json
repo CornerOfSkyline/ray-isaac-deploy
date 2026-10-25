@@ -1,131 +1,213 @@
-# Ray-Isaac-Deploy Configuration Schema
-$schema: "https://json-schema.org/draft/2020-12/schema"
-title: "Ray-Isaac-Deploy Cluster Configuration"
-type: object
-required: [hosts, ray, isaacsim, visualization]
-properties:
-  hosts:
-    type: object
-    required: [windows, a800, gpu4090]
-    properties:
-      windows:
-        type: object
-        properties:
-          role: {type: string, const: controller}
-          browser_port: {type: integer, default: 16006}
-      a800:
-        type: object
-        required: [ssh_host, ssh_port, ssh_user, role]
-        properties:
-          role: {type: string, const: ray_head}
-          ssh_host: {type: string}
-          ssh_port: {type: integer}
-          ssh_user: {type: string}
-      gpu4090:
-        type: object
-        required: [ssh_host, ssh_port, ssh_user, role]
-        properties:
-          role: {type: string, const: ray_worker_and_isaac_sim}
-          ssh_host: {type: string}
-          ssh_port: {type: integer}
-          ssh_user: {type: string}
-
-  ray:
-    type: object
-    required: [version]
-    properties:
-      version: {type: string, const: "2.40.0"}
-      head:
-        type: object
-        properties:
-          address: {type: string}
-          gcs_port: {type: integer}
-          node_manager_port: {type: integer}
-          object_manager_port: {type: integer}
-          cpu_count: {type: integer}
-          gpu_count: {type: integer}
-      worker:
-        type: object
-        properties:
-          address: {type: string}
-          node_manager_port: {type: integer}
-          object_manager_port: {type: integer}
-          worker_rpc_start: {type: integer}
-          worker_rpc_end: {type: integer}
-          cpu_count: {type: integer}
-          gpu_count: {type: integer}
-
-  ssh_tunnels:
-    type: object
-    properties:
-      worker_to_head:
-        type: array
-        items:
-          type: object
-          properties:
-            name: {type: string}
-            local_port: {type: integer}
-            remote_host: {type: string}
-            remote_port: {type: integer}
-            description: {type: string}
-      head_to_worker:
-        type: array
-        items:
-          type: object
-          properties:
-            name: {type: string}
-            local_ports: {type: string}
-            remote_host: {type: string}
-            remote_ports: {type: string}
-            description: {type: string}
-      windows_novnc:
-        type: object
-        properties:
-          local_port: {type: integer, default: 16006}
-          remote_port: {type: integer, default: 6006}
-
-  isaacsim:
-    type: object
-    required: [install_path, version, signal_port, stream_port]
-    properties:
-      install_path: {type: string}
-      version: {type: string}
-      signal_port: {type: integer, default: 49100}
-      stream_port: {type: integer, default: 47998}
-      public_ip: {type: string}
-      gpu_index: {type: integer, default: 0}
-      kit_extra_args: {type: array, items: {type: string}}
-
-  visualization:
-    type: object
-    required: [vnc, novnc, webrtc_client]
-    properties:
-      vnc:
-        type: object
-        properties:
-          binary: {type: string}
-          display: {type: string}
-          port: {type: integer}
-          geometry: {type: string}
-          extra_args: {type: array, items: {type: string}}
-      novnc:
-        type: object
-        properties:
-          path: {type: string}
-          websockify: {type: string}
-          port: {type: integer}
-      webrtc_client:
-        type: object
-        properties:
-          path: {type: string}
-          cdp_port: {type: integer}
-          electron_flags: {type: array, items: {type: string}}
-          auto_connect_script: {type: string}
-
-  operations:
-    type: object
-    properties:
-      pid_dir: {type: string, default: "/home/zjf/.local/state/ray-isaac-deploy"}
-      log_dir: {type: string, default: "/home/zjf/.local/state/ray-isaac-deploy/logs"}
-      health_check_timeout: {type: integer, default: 120}
-      max_retries: {type: integer, default: 3}
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/CornerOfSkyline/ray-isaac-deploy/config/cluster.schema.json",
+  "title": "Ray-Isaac-Deploy Cluster Configuration",
+  "description": "Configuration for Ray 2.40.0 + Isaac Sim 6.2.0 deployment on GPU cloud containers",
+  "type": "object",
+  "required": ["hosts", "ray", "isaacsim", "visualization"],
+  "additionalProperties": false,
+  "properties": {
+    "hosts": {
+      "type": "object",
+      "required": ["windows", "a800", "gpu4090"],
+      "additionalProperties": false,
+      "properties": {
+        "windows": {
+          "type": "object",
+          "required": ["role"],
+          "additionalProperties": false,
+          "properties": {
+            "role": { "type": "string", "const": "controller" },
+            "browser_port": { "type": "integer", "minimum": 1024, "maximum": 65535, "default": 16006 }
+          }
+        },
+        "a800": {
+          "type": "object",
+          "required": ["role", "ssh_host", "ssh_port", "ssh_user"],
+          "additionalProperties": false,
+          "properties": {
+            "role": { "type": "string", "const": "ray_head" },
+            "ssh_host": { "type": "string", "format": "hostname" },
+            "ssh_port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+            "ssh_user": { "type": "string", "minLength": 1 }
+          }
+        },
+        "gpu4090": {
+          "type": "object",
+          "required": ["role", "ssh_host", "ssh_port", "ssh_user"],
+          "additionalProperties": false,
+          "properties": {
+            "role": { "type": "string", "const": "ray_worker_and_isaac_sim" },
+            "ssh_host": { "type": "string" },
+            "ssh_port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+            "ssh_user": { "type": "string", "minLength": 1 }
+          }
+        }
+      }
+    },
+    "ray": {
+      "type": "object",
+      "required": ["version"],
+      "additionalProperties": false,
+      "properties": {
+        "version": { "type": "string", "const": "2.40.0" },
+        "head": {
+          "type": "object",
+          "required": ["address"],
+          "additionalProperties": false,
+          "properties": {
+            "address": { "type": "string", "pattern": "^127\\.0\\.0\\.\\d+$" },
+            "gcs_port": { "type": "integer", "minimum": 1024, "maximum": 65535, "default": 6379 },
+            "node_manager_port": { "type": "integer", "minimum": 1024, "maximum": 65535 },
+            "object_manager_port": { "type": "integer", "minimum": 1024, "maximum": 65535 },
+            "cpu_count": { "type": "integer", "minimum": 1 },
+            "gpu_count": { "type": "integer", "minimum": 0 },
+            "custom_resources": { "type": "object" }
+          }
+        },
+        "worker": {
+          "type": "object",
+          "required": ["address"],
+          "additionalProperties": false,
+          "properties": {
+            "address": { "type": "string", "pattern": "^127\\.0\\.0\\.\\d+$" },
+            "node_manager_port": { "type": "integer", "minimum": 1024, "maximum": 65535 },
+            "object_manager_port": { "type": "integer", "minimum": 1024, "maximum": 65535 },
+            "worker_rpc_start": { "type": "integer", "minimum": 1024, "maximum": 65535 },
+            "worker_rpc_end": { "type": "integer", "minimum": 1024, "maximum": 65535 },
+            "cpu_count": { "type": "integer", "minimum": 1 },
+            "gpu_count": { "type": "integer", "minimum": 0 },
+            "custom_resources": { "type": "object" }
+          }
+        }
+      }
+    },
+    "ssh_tunnels": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "worker_to_head": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["name", "local_port", "remote_host", "remote_port"],
+            "additionalProperties": false,
+            "properties": {
+              "name": { "type": "string" },
+              "local_port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+              "remote_host": { "type": "string" },
+              "remote_port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+              "description": { "type": "string" }
+            }
+          }
+        },
+        "head_to_worker": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["name", "remote_host"],
+            "additionalProperties": false,
+            "properties": {
+              "name": { "type": "string" },
+              "local_ports": { "type": "string", "pattern": "^\\d+(-\\d+)?$" },
+              "remote_host": { "type": "string" },
+              "remote_ports": { "type": "string", "pattern": "^\\d+(-\\d+)?$" },
+              "description": { "type": "string" }
+            }
+          }
+        },
+        "windows_novnc": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "local_port": { "type": "integer", "minimum": 1024, "maximum": 65535 },
+            "remote_port": { "type": "integer", "minimum": 1024, "maximum": 65535 }
+          }
+        }
+      }
+    },
+    "isaacsim": {
+      "type": "object",
+      "required": ["install_path", "signal_port", "stream_port", "public_ip"],
+      "additionalProperties": false,
+      "properties": {
+        "install_path": { "type": "string", "minLength": 1 },
+        "version": { "type": "string" },
+        "signal_port": { "type": "integer", "minimum": 1024, "maximum": 65535 },
+        "stream_port": { "type": "integer", "minimum": 1024, "maximum": 65535 },
+        "public_ip": { "type": "string" },
+        "gpu_index": { "type": "integer", "minimum": 0 },
+        "app_loaded_indicator": { "type": "string" }
+      }
+    },
+    "visualization": {
+      "type": "object",
+      "required": ["vnc", "novnc", "webrtc_client"],
+      "additionalProperties": false,
+      "properties": {
+        "vnc": {
+          "type": "object",
+          "required": ["binary", "display", "port", "geometry"],
+          "additionalProperties": false,
+          "properties": {
+            "binary": { "type": "string" },
+            "display": { "type": "string", "pattern": "^:\\d+$" },
+            "port": { "type": "integer", "minimum": 5900, "maximum": 5999 },
+            "geometry": { "type": "string", "pattern": "^\\d+x\\d+$" },
+            "depth": { "type": "integer", "minimum": 8, "maximum": 32 },
+            "library_path": { "type": "string" },
+            "extra_args": {
+              "type": "array",
+              "items": { "type": "string" }
+            }
+          }
+        },
+        "novnc": {
+          "type": "object",
+          "required": ["path", "websockify", "port"],
+          "additionalProperties": false,
+          "properties": {
+            "path": { "type": "string" },
+            "websockify": { "type": "string" },
+            "port": { "type": "integer", "minimum": 1024, "maximum": 65535 }
+          }
+        },
+        "webrtc_client": {
+          "type": "object",
+          "required": ["path", "cdp_port", "electron_flags"],
+          "additionalProperties": false,
+          "properties": {
+            "path": { "type": "string" },
+            "cdp_port": { "type": "integer", "minimum": 1024, "maximum": 65535 },
+            "electron_flags": {
+              "type": "array",
+              "items": { "type": "string" },
+              "contains": { "const": "--disable-gpu" }
+            },
+            "auto_connect_script": { "type": "string" }
+          }
+        }
+      }
+    },
+    "operations": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "pid_dir": { "type": "string" },
+        "log_dir": { "type": "string" },
+        "health_check_timeout": { "type": "integer", "minimum": 10, "maximum": 600 },
+        "max_retries": { "type": "integer", "minimum": 1, "maximum": 10 }
+      }
+    },
+    "gpu_mapping": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "physical_gpus": { "type": "integer", "minimum": 1 },
+        "ray_declared_gpus": { "type": "integer", "minimum": 0 },
+        "isaac_sim_uses_gpu": { "type": "integer", "minimum": 0 },
+        "gpu_uuids": { "type": "object" }
+      }
+    }
+  }
+}
