@@ -145,20 +145,35 @@ M6=$!
 setup_pid "${T6}" xvnc "${M6}"
 setup_id  "${T6}" xvnc "${M6}"
 
-# Run stop — should timeout on SIGTERM after 15s, re-verify, then SIGKILL
-run_stop "${T6}" || true
+	# Run stop and capture output
+	STOP_OUT=$(run_stop "${T6}") || true
 
-if kill -0 "${M6}" 2>/dev/null; then
-    fail "Process still alive after SIGKILL"
-    kill -9 "${M6}" 2>/dev/null || true
-else
-    pass "SIGKILL succeeded after SIGTERM ignored"
-fi
-if is_cleaned "${T6}" xvnc; then
-    pass "Identity cleaned after successful SIGKILL"
-else
-    fail "Identity not cleaned after SIGKILL"
-fi
+	# Assert SIGTERM was ignored, identity re-verified, SIGKILL sent
+	if echo "${STOP_OUT}" | grep -q "did not stop gracefully"; then
+	    pass "SIGTERM ignored (timeout detected)"
+	else
+	    fail "SIGTERM timeout NOT detected"
+	fi
+	if echo "${STOP_OUT}" | grep -q "re-checking identity before SIGKILL"; then
+	    pass "Identity re-verified before SIGKILL"
+	else
+	    fail "Identity re-verification before SIGKILL NOT detected"
+	fi
+	if echo "${STOP_OUT}" | grep -q "terminated and records cleaned"; then
+	    pass "Records cleaned after confirmed termination"
+	else
+	    fail "Records NOT cleaned after termination"
+	fi
+	if kill -0 "${M6}" 2>/dev/null; then
+	    fail "Process still alive after SIGKILL"; kill -9 "${M6}" 2>/dev/null || true
+	else
+	    pass "Process confirmed dead after SIGKILL"
+	fi
+	if is_cleaned "${T6}" xvnc; then
+	    pass "PID/identity files cleaned"
+	else
+	    fail "PID/identity files NOT cleaned"
+	fi
 rm -rf "${T6}"
 
 # ============================================================

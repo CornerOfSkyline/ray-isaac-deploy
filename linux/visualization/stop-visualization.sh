@@ -136,8 +136,27 @@ stop_service() {
     log "  ${name}: identity re-verified, sending SIGKILL"
     kill -9 "${pid}" 2>/dev/null || true
     sleep 1
-    rm -f "$(pid_file "${name}")" "$(identity_file "${name}")"
-    return 0
+
+    # Verify process actually terminated
+    if kill -0 "${pid}" 2>/dev/null; then
+        # Still alive: check if it's a zombie
+        local state
+        state=$(awk '{print $3}' "/proc/${pid}/stat" 2>/dev/null || echo "?")
+        if [[ "${state}" == "Z" ]]; then
+            warn "  ${name}: PID ${pid} is zombie (state Z) — child reaped by init"
+        else
+            warn "  ${name}: PID ${pid} still alive (state ${state}) after SIGKILL — records preserved"
+            return 1
+        fi
+    fi
+
+    # Only clean up if process is confirmed gone (not running)
+    if ! kill -0 "${pid}" 2>/dev/null; then
+        rm -f "$(pid_file "${name}")" "$(identity_file "${name}")"
+        log "  ${name}: terminated and records cleaned"
+        return 0
+    fi
+    return 1
 }
 
 # ============================================================
