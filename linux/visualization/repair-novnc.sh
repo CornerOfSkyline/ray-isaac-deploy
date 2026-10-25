@@ -1,6 +1,7 @@
 #!/bin/bash
-# repair-novnc.sh - Fix noVNC binding to 127.0.0.1:6006 without touching other services
-# Only affects websockify. Does NOT restart Isaac Sim, Xvnc, WebRTC Client, or Ray.
+# repair-novnc.sh - Fix noVNC binding to 127.0.0.1:6006
+# Audit mode (default): read-only inspection, no changes
+# Apply mode (--apply): controlled restart with full identity verification
 set -euo pipefail
 
 STATE_DIR="${HOME}/.local/state/ray-isaac-deploy"
@@ -8,165 +9,281 @@ PID_DIR="${STATE_DIR}/pids"
 LOG_DIR="${STATE_DIR}/logs"
 mkdir -p "${LOG_DIR}" "${PID_DIR}"
 
-log() { echo "[$(date +%H:%M:%S)] $*"; }
-warn() { log "WARN: $*" >&2; }
+log()   { echo "[$(date +%H:%M:%S)] $*"; }
+warn()  { log "WARN: $*" >&2; }
+die()   { log "FATAL: $*" >&2; exit 1; }
 
-pid_file() { echo "${PID_DIR}/$1.pid"; }
-read_pid() { cat "$(pid_file "$1")" 2>/dev/null || echo ""; }
+pid_file()      { echo "${PID_DIR}/$1.pid"; }
+identity_file() { echo "${PID_DIR}/$1.identity.json"; }
+read_pid()      { cat "$(pid_file "$1")" 2>/dev/null || echo ""; }
 
-# ============================================================
-# 1. Audit current state (read-only)
-# ============================================================
-log "=== noVNC Repair Audit ==="
+# Read saved identity if it exists
+read_identity() {
+    local f
+    f="$(identity_file "$1")"
+    if [[ -f "${f}" ]]; then cat "${f}"; else echo "{}"; fi
+}
 
-# Find all processes listening on port 6006
-log "Processes on port 6006:"
-ss -tlnp 2>/dev/null | grep ':6006 ' | while read -r line; do
-    log "  ${line}"
-done
+# Build current identity for a PID
+build_identity() {
+    local pid="$1"
+    local uid exe start_time cmdline
+    uid=$(awk '/^Uid:/{print $2}' "/proc/${pid}/status" 2>/dev/null || echo "0")
+    start_time=$(awk '{print $22}' "/proc/${pid}/stat" 2>/dev/null || echo "0")
+    exe=$(readlink -f "/proc/${pid}/exe" 2>/dev/null || echo "")
+    cmdline=$(tr '\0' ' ' < "/proc/${pid}/cmdline" 2>/dev/null | cut -c1-300 || echo "")
+    printf '{"pid":%s,"uid":%s,"start_time":%s,"exe":"%s","cmdline":"%s"}' \
+        "${pid}" "${uid}" "${start_time}" "${exe}" "${cmdline}"
+}
 
-# Check managed PID
-MANAGED_PID=$(read_pid "novnc")
-if [[ -n "${MANAGED_PID}" ]] && kill -0 "${MANAGED_PID}" 2>/dev/null; then
-    M_UID=$(awk '/^Uid:/{print $2}' "/proc/${MANAGED_PID}/status" 2>/dev/null || echo "?")
-    M_EXE=$(readlink -f "/proc/${MANAGED_PID}/exe" 2>/dev/null || echo "?")
-    M_START=$(awk '{print $22}' "/proc/${MANAGED_PID}/stat" 2>/dev/null || echo "?")
-    M_CMD=$(tr '\0' ' ' < "/proc/${MANAGED_PID}/cmdline" 2>/dev/null | cut -c1-200 || echo "?")
-    log "Managed noVNC: PID=${MANAGED_PID} UID=${M_UID} START=${M_START}"
-    log "  EXE=${M_EXE}"
-    log "  CMD=${M_CMD}"
-else
-    log "No managed noVNC PID found"
-fi
+# Compare two identity JSON strings; return 0 if key fields match
+identity_matches() {
+    local saved="$1" current="$2"
+    local s_pid s_uid s_start c_pid c_uid c_start
+    s_pid=$(echo "${saved}"    | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('pid',''))" 2>/dev/null || echo "")
+    s_uid=$(echo "${saved}"    | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('uid',''))" 2>/dev/null || echo "")
+    s_start=$(echo "${saved}"  | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('start_time',''))" 2>/dev/null || echo "")
+    c_pid=$(echo "${current}"  | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('pid',''))" 2>/dev/null || echo "")
+    c_uid=$(echo "${current}"  | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('uid',''))" 2>/dev/null || echo "")
+    c_start=$(echo "${current}"| python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('start_time',''))" 2>/dev/null || echo "")
+    [[ "${s_pid}" == "${c_pid}" ]] || return 1
+    [[ "${s_uid}" == "${c_uid}" ]] || return 1
+    [[ "${s_start}" == "${c_start}" ]] || return 1
+    return 0
+}
 
-# Check all websockify processes
-UNMANAGED=()
-for wspid in $(pgrep -x websockify 2>/dev/null || true); do
-    [[ "${wspid}" == "${MANAGED_PID}" ]] && continue
-    W_UID=$(awk '/^Uid:/{print $2}' "/proc/${wspid}/status" 2>/dev/null || echo "?")
-    W_EXE=$(readlink -f "/proc/${wspid}/exe" 2>/dev/null || echo "?")
-    W_CMD=$(tr '\0' ' ' < "/proc/${wspid}/cmdline" 2>/dev/null | cut -c1-200 || echo "?")
-    warn "Unmanaged websockify PID=${wspid} UID=${W_UID} EXE=${W_EXE}"
-    warn "  CMD=${W_CMD}"
-    UNMANAGED+=("${wspid}")
-done
+# Kill with identity verification before each signal
+safe_kill() {
+    local pid="$1" saved_identity="$2" signal="${3:-TERM}"
+    if ! kill -0 "${pid}" 2>/dev/null; then
+        log "  PID ${pid} already gone"
+        return 0
+    fi
+    local current
+    current=$(build_identity "${pid}")
+    if ! identity_matches "${saved_identity}" "${current}"; then
+        die "  Identity mismatch for PID ${pid}! Refusing ${signal}."
+    fi
+    log "  Sending SIG${signal} to PID ${pid} (identity verified)"
+    kill "-${signal}" "${pid}" 2>/dev/null || true
+}
 
-# Current binding
-BIND=$(ss -tlnp 2>/dev/null | grep ':6006 ' | awk '{print $4}' | head -1)
-log "Current bind: ${BIND}"
-EXPECTED="127.0.0.1:6006"
-
-if [[ "${BIND}" == "${EXPECTED}" ]]; then
-    log "Binding is already correct (${EXPECTED}). No repair needed."
-    exit 0
-fi
-
-# ============================================================
-# 2. Impact assessment
-# ============================================================
-log ""
-log "=== Impact Assessment ==="
-log "Current binding: ${BIND}"
-log "Expected binding: ${EXPECTED}"
-log ""
-log "Repair plan:"
-log "  1. Stop managed noVNC websockify (PID ${MANAGED_PID:-NONE})"
-log "  2. Stop any unmanaged websockify on port 6006"
-log "  3. Start new websockify on 127.0.0.1:6006"
-log "  4. Verify binding"
-log ""
-log "Services NOT affected:"
-log "  - Isaac Sim (port 49100)"
-log "  - Xvnc (DISPLAY=:1, port 5901)"
-log "  - WebRTC Client (CDP 9222)"
-log "  - Ray Worker/Head"
-log "  - GPU training jobs"
-log ""
-log "Temporary impact:"
-log "  - Windows VNC viewer will disconnect during restart (~5 seconds)"
-log "  - Reconnect after repair completes"
-log ""
+# Save identity atomically
+save_identity() {
+    local name="$1" pid="$2"
+    local tmpfile identity
+    tmpfile="$(identity_file "${name}").tmp.$$"
+    identity=$(build_identity "${pid}")
+    echo "${identity}" > "${tmpfile}"
+    mv "${tmpfile}" "$(identity_file "${name}")"
+}
 
 # ============================================================
-# 3. Execute repair
+# AUDIT MODE (default)
 # ============================================================
+run_audit() {
+    log "=== noVNC Audit (read-only) ==="
 
-# Stop managed instance
-if [[ -n "${MANAGED_PID}" ]] && kill -0 "${MANAGED_PID}" 2>/dev/null; then
-    # Verify identity before killing
-    V_UID=$(awk '/^Uid:/{print $2}' "/proc/${MANAGED_PID}/status" 2>/dev/null || echo "")
-    V_CMD=$(tr '\0' ' ' < "/proc/${MANAGED_PID}/cmdline" 2>/dev/null || echo "")
+    # 1. All processes on port 6006
+    log "Processes on port 6006:"
+    local pids
+    pids=$(ss -tlnp 2>/dev/null | grep ':6006 ' | grep -oP 'pid=\d+' | cut -d= -f2 || true)
+    if [[ -z "${pids}" ]]; then
+        log "  No process listening on port 6006"
+    fi
+    for pid in ${pids}; do
+        local identity
+        identity=$(build_identity "${pid}")
+        log "  PID=${pid}: $(echo "${identity}" | python3 -c "import json,sys;d=json.load(sys.stdin);print('UID='+str(d.get('uid',''))+' EXE='+str(d.get('exe',''))[-80:])" 2>/dev/null || echo "parse error")"
+    done
 
-    if [[ "${V_CMD}" == *"websockify"* ]] || [[ "${V_CMD}" == *"6006"* ]]; then
-        log "Stopping managed noVNC PID=${MANAGED_PID} (UID=${V_UID})..."
-        kill -TERM "${MANAGED_PID}" 2>/dev/null || true
-        for i in $(seq 1 10); do
-            if ! kill -0 "${MANAGED_PID}" 2>/dev/null; then
-                log "  Stopped after ${i}s"
-                break
+    # 2. Managed identity
+    local managed_pid
+    managed_pid=$(read_pid "novnc")
+    local saved
+    saved=$(read_identity "novnc")
+    log ""
+    log "Managed noVNC record:"
+    if [[ -n "${managed_pid}" ]]; then
+        log "  PID file: ${managed_pid}"
+        log "  Saved identity: ${saved}"
+        if kill -0 "${managed_pid}" 2>/dev/null; then
+            local current
+            current=$(build_identity "${managed_pid}")
+            if identity_matches "${saved}" "${current}"; then
+                log "  Status: MANAGED (identity matches)"
+            else
+                log "  Status: IDENTITY_MISMATCH"
+                log "    Saved:  ${saved}"
+                log "    Current: ${current}"
             fi
-            sleep 1
-        done
-        if kill -0 "${MANAGED_PID}" 2>/dev/null; then
-            warn "  Force killing..."
-            kill -9 "${MANAGED_PID}" 2>/dev/null || true
+        else
+            log "  Status: PID_STALE (process not running)"
         fi
     else
-        warn "  PID ${MANAGED_PID} does not look like websockify - refusing to kill"
+        log "  No managed PID file"
     fi
-fi
 
-# Clean up any remaining websockify on port 6006
-sleep 1
-REMAINING=$(ss -tlnp 2>/dev/null | grep ':6006 ' | grep -oP 'pid=\d+' | cut -d= -f2 || true)
-for rpid in ${REMAINING}; do
-    R_CMD=$(tr '\0' ' ' < "/proc/${rpid}/cmdline" 2>/dev/null || echo "")
-    if [[ "${R_CMD}" == *"websockify"* ]]; then
-        log "Stopping remaining websockify PID=${rpid}..."
-        kill -TERM "${rpid}" 2>/dev/null || true
-        sleep 2
-        kill -9 "${rpid}" 2>/dev/null || true
+    # 3. Current binding
+    local bind
+    bind=$(ss -tlnp 2>/dev/null | grep ':6006 ' | awk '{print $4}' | head -1)
+    log ""
+    log "Current binding: ${bind:-NONE}"
+    log "Expected binding: 127.0.0.1:6006"
+    if [[ "${bind}" == "127.0.0.1:6006" ]]; then
+        log "Status: CORRECT - no repair needed"
+    elif [[ "${bind}" == "0.0.0.0:6006" ]] || [[ "${bind}" == *":6006" ]]; then
+        log "Status: NEEDS REPAIR - run with --apply to fix"
     else
-        warn "PID ${rpid} on port 6006 is NOT websockify - refusing to kill"
+        log "Status: UNKNOWN_BINDING"
     fi
-done
 
-sleep 2
-
-# ============================================================
-# 4. Start new noVNC on 127.0.0.1:6006
-# ============================================================
-log "Starting noVNC on 127.0.0.1:6006..."
-nohup /home/zjf/.local/bin/websockify --web=/home/zjf/noVNC-1.5.0 \
-    127.0.0.1:6006 127.0.0.1:5901 > "${LOG_DIR}/novnc.log" 2>&1 &
-NEW_PID=$!
-echo "${NEW_PID}" > "$(pid_file novnc)"
-sleep 2
-
-# Verify
-NEW_BIND=$(ss -tlnp 2>/dev/null | grep ':6006 ' | awk '{print $4}' | head -1)
-if [[ "${NEW_BIND}" == "${EXPECTED}" ]]; then
-    log "Repair SUCCESS: noVNC bound to ${EXPECTED} (PID ${NEW_PID})"
-else
-    warn "Repair WARNING: binding is ${NEW_BIND} (expected ${EXPECTED})"
-fi
+    # 4. Public reachability check
+    log ""
+    log "Public reachability check:"
+    local pub_code
+    pub_code=$(curl -s --connect-timeout 3 -o /dev/null -w '%{http_code}' "http://180.97.68.228:6006/vnc.html" 2>/dev/null || echo "000")
+    log "  External HTTP on port 6006: ${pub_code} ($([[ "${pub_code}" == "000" ]] && echo "NOT REACHABLE" || echo "REACHABLE"))"
+}
 
 # ============================================================
-# 5. Post-repair verification
+# APPLY MODE (--apply)
 # ============================================================
-log ""
-log "=== Post-Repair Status ==="
-log "noVNC: $(ss -tlnp 2>/dev/null | grep ':6006 ' | awk '{print $4}' | head -1)"
-log "VNC:   $(ss -tlnp 2>/dev/null | grep ':5901 ' | awk '{print $4}' | head -1)"
-log "Isaac: $(ss -tlnp 2>/dev/null | grep ':49100 ' | awk '{print $4}' | head -1)"
-log "CDP:   $(ss -tlnp 2>/dev/null | grep ':9222 ' | awk '{print $4}' | head -1)"
+run_apply() {
+    log "=== noVNC Repair (Apply) ==="
 
-# Quick noVNC HTTP check
-if curl -s --connect-timeout 3 http://127.0.0.1:6006/vnc.html >/dev/null 2>&1; then
-    log "noVNC HTTP: accessible"
-else
-    warn "noVNC HTTP: check failed"
-fi
+    local bind
+    bind=$(ss -tlnp 2>/dev/null | grep ':6006 ' | awk '{print $4}' | head -1)
+    if [[ "${bind}" == "127.0.0.1:6006" ]]; then
+        log "Binding already correct. No repair needed."
+        return 0
+    fi
 
-log "=== Repair Complete ==="
-log "Windows: reconnect browser at http://127.0.0.1:16006/vnc.html"
+    # Find managed websockify
+    local managed_pid
+    managed_pid=$(read_pid "novnc")
+    if [[ -z "${managed_pid}" ]]; then
+        die "No managed noVNC PID found. Cannot safely repair. Run audit first."
+    fi
+    if ! kill -0 "${managed_pid}" 2>/dev/null; then
+        die "Managed PID ${managed_pid} is not running. Run audit to diagnose."
+    fi
+
+    # Verify managed identity
+    local saved current
+    saved=$(read_identity "novnc")
+    current=$(build_identity "${managed_pid}")
+    log "Managed PID: ${managed_pid}"
+    log "Saved:  ${saved}"
+    log "Current: ${current}"
+
+    if ! identity_matches "${saved}" "${current}"; then
+        die "Identity mismatch for managed PID ${managed_pid}. Refusing to proceed."
+    fi
+
+    # Verify current process IS websockify
+    local cmdline
+    cmdline=$(tr '\0' ' ' < "/proc/${managed_pid}/cmdline" 2>/dev/null || echo "")
+    if [[ "${cmdline}" != *"websockify"* ]]; then
+        die "PID ${managed_pid} does not appear to be websockify: ${cmdline}"
+    fi
+
+    # Verify no OTHER process is listening on 6006
+    local all_pids
+    all_pids=$(ss -tlnp 2>/dev/null | grep ':6006 ' | grep -oP 'pid=\d+' | cut -d= -f2 || true)
+    for pid in ${all_pids}; do
+        if [[ "${pid}" != "${managed_pid}" ]]; then
+            local other_cmd
+            other_cmd=$(tr '\0' ' ' < "/proc/${pid}/cmdline" 2>/dev/null || echo "")
+            die "Another process (PID ${pid}) is also on port 6006: ${other_cmd}. Manual investigation required."
+        fi
+    done
+
+    # ---- All checks passed, proceed with controlled restart ----
+    log "Identity verified. Proceeding with controlled restart."
+
+    # Stop: SIGTERM with identity re-check
+    safe_kill "${managed_pid}" "${saved}" "TERM"
+    local waited=0
+    while kill -0 "${managed_pid}" 2>/dev/null && [[ ${waited} -lt 15 ]]; do
+        sleep 1; waited=$((waited + 1))
+    done
+
+    if kill -0 "${managed_pid}" 2>/dev/null; then
+        log "SIGTERM did not stop process after ${waited}s"
+        # Re-verify identity before SIGKILL
+        local current2
+        current2=$(build_identity "${managed_pid}")
+        if identity_matches "${saved}" "${current2}"; then
+            safe_kill "${managed_pid}" "${saved}" "KILL"
+            sleep 1
+        else
+            die "Identity changed during shutdown! Refusing SIGKILL."
+        fi
+    fi
+
+    if kill -0 "${managed_pid}" 2>/dev/null; then
+        die "Failed to stop PID ${managed_pid} even with SIGKILL"
+    fi
+    log "  Stopped PID ${managed_pid}"
+
+    # Verify port is free
+    sleep 1
+    if ss -tlnp 2>/dev/null | grep -q ':6006 '; then
+        die "Port 6006 still occupied after stopping managed process"
+    fi
+
+    # Start new websockify on 127.0.0.1:6006
+    log "Starting new websockify on 127.0.0.1:6006..."
+    nohup /home/zjf/.local/bin/websockify --web=/home/zjf/noVNC-1.5.0 \
+        127.0.0.1:6006 127.0.0.1:5901 > "${LOG_DIR}/novnc.log" 2>&1 &
+    local new_pid=$!
+    sleep 2
+
+    if ! kill -0 "${new_pid}" 2>/dev/null; then
+        die "New websockify (PID ${new_pid}) died immediately. Check ${LOG_DIR}/novnc.log"
+    fi
+
+    # Save new identity atomically
+    echo "${new_pid}" > "$(pid_file novnc)"
+    save_identity "novnc" "${new_pid}"
+
+    # Verify binding
+    local new_bind
+    new_bind=$(ss -tlnp 2>/dev/null | grep ':6006 ' | awk '{print $4}' | head -1)
+    if [[ "${new_bind}" != "127.0.0.1:6006" ]]; then
+        warn "New binding is ${new_bind}, expected 127.0.0.1:6006"
+        warn "Rollback: NOT restoring old 0.0.0.0 binding"
+        exit 1
+    fi
+
+    # Verify HTTP access
+    if curl -s --connect-timeout 3 http://127.0.0.1:6006/vnc.html >/dev/null 2>&1; then
+        log "HTTP check: OK"
+    else
+        warn "HTTP check: FAILED (may need browser refresh)"
+    fi
+
+    log "Repair SUCCESS: noVNC bound to 127.0.0.1:6006 (PID ${new_pid})"
+    return 0
+}
+
+# ============================================================
+# Main
+# ============================================================
+case "${1:-}" in
+    --apply)
+        run_audit
+        echo ""
+        run_apply
+        ;;
+    audit|status|"")
+        run_audit
+        ;;
+    *)
+        echo "Usage: $0 [--apply]" >&2
+        echo "  (no args)  Audit mode: inspect only, no changes" >&2
+        echo "  --apply    Apply mode: controlled repair (requires authorization)" >&2
+        exit 2
+        ;;
+esac
