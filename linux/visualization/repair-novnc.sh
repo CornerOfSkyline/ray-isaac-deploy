@@ -58,10 +58,6 @@ sys.exit(0)
 # Kill with identity verification before each signal
 safe_kill() {
     local pid="$1" saved_identity="$2" signal="${3:-TERM}"
-
-# Kill with identity verification before each signal
-safe_kill() {
-    local pid="$1" saved_identity="$2" signal="${3:-TERM}"
     if ! kill -0 "${pid}" 2>/dev/null; then
         log "  PID ${pid} already gone"
         return 0

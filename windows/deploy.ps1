@@ -167,11 +167,11 @@ function Invoke-Verify {
         $scrPath = Join-Path $ProjectDir 'tests\e2e\verify_ray_active.py'
         if(Test-Path $scrPath){
             $scr = Get-Content $scrPath -Raw
-            $ar = Invoke-SSH -Hn $H.GPU_H -P $H.GPU_P -U $H.GPU_U -Cmd "python3 -s" -T 120
-            # Use Send-SSH for proper stdin script transmission
-            $ar2 = Send-SSH -Hn $H.GPU_H -P $H.GPU_P -U $H.GPU_U -Script $scr -Interpreter 'python3' -T 120
-            if($ar2.Ok()){V 'Ray GPU verify' $true}else{V 'Ray GPU verify' $false "$($ar2.Err)"}
-        } else { V 'Ray verify script' $false 'script not found' }
+            # Pass head_ip, gcs_port, worker_ip via stdin script + command args
+            $scrWithArgs = "import sys; sys.argv = ['verify_ray_active.py', '$($H.HIP)', '$($H.GCS)', '$($H.WIP)']`n" + $scr
+            $ar2 = Send-SSH -Hn $H.GPU_H -P $H.GPU_P -U $H.GPU_U -Script $scrWithArgs -Interpreter 'python3 -s' -T 120
+            if($ar2.Ok()){WC 'Ray GPU verify' 'PASS'}else{WC 'Ray GPU verify' 'FAIL' "$($ar2.Err)"}
+        } else { WC 'Ray verify script' 'FAIL' 'script not found' }
     }
 
     $pr=S4090 "ss -tlnp 2>/dev/null" -T 10
