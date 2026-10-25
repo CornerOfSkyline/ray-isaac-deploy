@@ -7,11 +7,12 @@ set -euo pipefail
 STATE_DIR="${HOME}/.local/state/ray-isaac-deploy"
 PID_DIR="${STATE_DIR}/pids"
 LOG_DIR="${STATE_DIR}/logs"
-mkdir -p "${LOG_DIR}" "${PID_DIR}"
 
 log()   { echo "[$(date +%H:%M:%S)] $*"; }
 warn()  { log "WARN: $*" >&2; }
 die()   { log "FATAL: $*" >&2; exit 1; }
+
+ensure_dirs() { mkdir -p "${LOG_DIR}" "${PID_DIR}" 2>/dev/null || true; }
 
 pid_file()      { echo "${PID_DIR}/$1.pid"; }
 identity_file() { echo "${PID_DIR}/$1.identity.json"; }
@@ -154,6 +155,7 @@ run_audit() {
 # ============================================================
 run_apply() {
     log "=== noVNC Repair (Apply) ==="
+    ensure_dirs
 
     local bind
     bind=$(ss -tlnp 2>/dev/null | grep ':6006 ' | awk '{print $4}' | head -1)
@@ -276,6 +278,7 @@ run_apply() {
 # ============================================================
 run_adopt() {
     log "=== noVNC Adoption ==="
+    ensure_dirs
 
     local pids
     pids=$(ss -tlnp 2>/dev/null | grep ':6006 ' | grep -oP 'pid=\d+' | cut -d= -f2 || true)
