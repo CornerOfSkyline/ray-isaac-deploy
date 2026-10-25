@@ -1,0 +1,131 @@
+{
+  "generated": "2026-10-25T00:40:00+08:00",
+  "description": "Golden baseline of working Isaac Sim 6.2 + Ray 2.40.0 deployment on A800+4090",
+  "verified": true,
+  "machines": {
+    "windows": {
+      "role": "controller",
+      "os": "Windows 10/11",
+      "shell": "PowerShell 5.1",
+      "ssh": "OpenSSH (pre-installed)",
+      "browser_port": 16006,
+      "browser_url": "http://127.0.0.1:16006/vnc.html?autoconnect=1&resize=remote"
+    },
+    "a800": {
+      "role": "ray_head",
+      "ssh": "ssh -p 46885 zjf@117.74.66.77",
+      "hostname": "is-ddl55mw4vylqslzf-devmachine-0",
+      "os": "Ubuntu 22.04.4 LTS",
+      "python": "3.10.12",
+      "ray_version": "2.40.0",
+      "ray_role": "head",
+      "gcs_port": 6379,
+      "node_manager_port": 22002,
+      "object_manager_port": 22003,
+      "metrics_export_port": 22005,
+      "dashboard_agent_port": 22005,
+      "dashboard_port": 8265,
+      "ray_address": "127.0.0.2",
+      "gpu_count": 8,
+      "gpu_type": "A800",
+      "resources": {
+        "CPU": 4,
+        "GPU": 8,
+        "head_A800": 1,
+        "accelerator_type:A800": 1
+      },
+      "tunnel_script": "/home/zjf/workspace/ray_ws/ray_ssh_cluster/head_tunnel.sh",
+      "tunnels": {
+        "gcs_forward": "ssh -N -L 127.0.0.3:6379:127.0.0.2:6379 (from 4090)",
+        "worker_rpc_23002_23007": "ssh -N -L 127.0.0.3:23002:127.0.0.3:23002 ... (ports 23002-23007)",
+        "worker_rpc_23100_23131": "ssh -N -L 127.0.0.3:23100:127.0.0.3:23100 ... (ports 23100-23131)"
+      }
+    },
+    "gpu4090": {
+      "role": "ray_worker_and_isaac_sim",
+      "ssh": "ssh -p 46602 zjf@180.97.68.228",
+      "hostname": "is-ddmdgb2vod4i72pf-devmachine-0",
+      "os": "Ubuntu 22.04.4 LTS",
+      "python": "3.10.12",
+      "ray_version": "2.40.0",
+      "ray_role": "worker",
+      "ray_address": "127.0.0.3",
+      "node_manager_port": 23002,
+      "object_manager_port": 23003,
+      "worker_rpc_ports": "23100-23131",
+      "gcs_forward": "127.0.0.2:6379 -> A800 GCS via SSH tunnel",
+      "gpu_count": 4,
+      "gpu_type": "NVIDIA GeForce RTX 4090",
+      "gpu_memory_mb": 24564,
+      "driver_version": "580.82.07",
+      "cuda_version": "13.0",
+      "gpu_uuids": [
+        "GPU-637fc38c-c7a0-e4af-b398-14f87666faa5",
+        "GPU-70c136de-d9cd-f1ae-bb3a-a357600c9a54",
+        "GPU-178db7cd-75de-0a04-456b-0e9e04b97175",
+        "GPU-396f81bf-1fbf-296a-35b0-26c3a5a0c169"
+      ],
+      "vulkan_version": "1.4.312",
+      "nvenc": true,
+      "resources": {
+        "CPU": 4,
+        "GPU": 1,
+        "worker_4090": 1,
+        "accelerator_type:G": 1
+      },
+      "isaac_sim": {
+        "version": "6.2.0-rc.14+release.52805.02189a84.gl",
+        "install_path": "/home/zjf/isaacsim",
+        "entry_script": "isaac-sim.streaming.sh",
+        "signal_port": 49100,
+        "stream_port": 47998,
+        "public_ip": "192.168.0.12",
+        "kit_cmdline": "--no-window --allow-root --/exts/omni.kit.livestream.app/primaryStream/signalPort=49100 --/exts/omni.kit.livestream.app/primaryStream/streamPort=47998 --/exts/omni.kit.livestream.app/primaryStream/publicIp=192.168.0.12",
+        "app_loaded_indicator": "Isaac Sim Full Streaming App is loaded"
+      },
+      "webrtc_client": {
+        "path": "/home/zjf/isaacsim-webrtc-streaming-client/opt/Isaac Sim WebRTC Streaming Client/isaacsim-webrtc-streaming-client",
+        "version": "2.0.0",
+        "working_flags": "--no-sandbox --disable-gpu --disable-dev-shm-usage --ozone-platform=x11 --remote-debugging-port=9222",
+        "cdp_port": 9222,
+        "auto_connect_script": "/home/zjf/auto_connect_webrtc.py",
+        "click_connect_script": "/home/zjf/click_connect.py"
+      },
+      "vnc": {
+        "binary": "/home/zjf/tigervnc/usr/bin/Xvnc",
+        "version": "1.14.1",
+        "display": ":1",
+        "port": 5901,
+        "resolution": "1920x1080",
+        "depth": 24,
+        "libxcvt_path": "/home/zjf/tigervnc/usr/lib",
+        "cmdline": "-geometry 1920x1080 -depth 24 -SecurityTypes None -AlwaysShared -localhost=1 -ac"
+      },
+      "novnc": {
+        "path": "/home/zjf/noVNC-1.5.0",
+        "version": "1.5.0",
+        "websockify": "/home/zjf/.local/bin/websockify",
+        "port": 6006
+      }
+    }
+  },
+  "key_scripts": {
+    "/home/zjf/launch_webrtc_client.sh": "WebRTC client launcher (with --disable-gpu fix)",
+    "/home/zjf/auto_connect_webrtc.py": "CDP auto-connect via localStorage + location.search",
+    "/home/zjf/click_connect.py": "CDP connect via button click (backup)",
+    "/home/zjf/cdp_diagnose.py": "CDP DOM/state diagnostic tool",
+    "/home/zjf/start_isaac_tcp_stream.sh": "Full pipeline launcher script",
+    "/home/zjf/quick_setup.sh": "One-time dependency installer"
+  },
+  "known_issues": [
+    "SwiftShader/ANGLE GPU flags (VK_ICD_FILENAMES, --enable-unsafe-swiftshader, --use-gl=angle) break Electron rendering on Xvnc - use --disable-gpu instead",
+    "TigerVNC requires LD_LIBRARY_PATH=/home/zjf/tigervnc/usr/lib for libxcvt.so.0",
+    "Duplicate websockify instances can accumulate - need single-instance management",
+    "SSH commands fail with exit 255 when Isaac Sim is at high CPU - use short commands or nohup"
+  ],
+  "fixes_applied": {
+    "electron_rendering": "Replaced SwiftShader/ANGLE flags with --disable-gpu for Xvnc compatibility",
+    "libxcvt": "Downloaded libxcvt0_0.1.1-3_amd64.deb and extracted to /home/zjf/tigervnc/usr/lib",
+    "xkbcomp": "No fix needed - TigerVNC uses internal XKB when libxcvt is present"
+  }
+}

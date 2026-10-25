@@ -1,0 +1,131 @@
+# Ray-Isaac-Deploy Configuration Schema
+$schema: "https://json-schema.org/draft/2020-12/schema"
+title: "Ray-Isaac-Deploy Cluster Configuration"
+type: object
+required: [hosts, ray, isaacsim, visualization]
+properties:
+  hosts:
+    type: object
+    required: [windows, a800, gpu4090]
+    properties:
+      windows:
+        type: object
+        properties:
+          role: {type: string, const: controller}
+          browser_port: {type: integer, default: 16006}
+      a800:
+        type: object
+        required: [ssh_host, ssh_port, ssh_user, role]
+        properties:
+          role: {type: string, const: ray_head}
+          ssh_host: {type: string}
+          ssh_port: {type: integer}
+          ssh_user: {type: string}
+      gpu4090:
+        type: object
+        required: [ssh_host, ssh_port, ssh_user, role]
+        properties:
+          role: {type: string, const: ray_worker_and_isaac_sim}
+          ssh_host: {type: string}
+          ssh_port: {type: integer}
+          ssh_user: {type: string}
+
+  ray:
+    type: object
+    required: [version]
+    properties:
+      version: {type: string, const: "2.40.0"}
+      head:
+        type: object
+        properties:
+          address: {type: string}
+          gcs_port: {type: integer}
+          node_manager_port: {type: integer}
+          object_manager_port: {type: integer}
+          cpu_count: {type: integer}
+          gpu_count: {type: integer}
+      worker:
+        type: object
+        properties:
+          address: {type: string}
+          node_manager_port: {type: integer}
+          object_manager_port: {type: integer}
+          worker_rpc_start: {type: integer}
+          worker_rpc_end: {type: integer}
+          cpu_count: {type: integer}
+          gpu_count: {type: integer}
+
+  ssh_tunnels:
+    type: object
+    properties:
+      worker_to_head:
+        type: array
+        items:
+          type: object
+          properties:
+            name: {type: string}
+            local_port: {type: integer}
+            remote_host: {type: string}
+            remote_port: {type: integer}
+            description: {type: string}
+      head_to_worker:
+        type: array
+        items:
+          type: object
+          properties:
+            name: {type: string}
+            local_ports: {type: string}
+            remote_host: {type: string}
+            remote_ports: {type: string}
+            description: {type: string}
+      windows_novnc:
+        type: object
+        properties:
+          local_port: {type: integer, default: 16006}
+          remote_port: {type: integer, default: 6006}
+
+  isaacsim:
+    type: object
+    required: [install_path, version, signal_port, stream_port]
+    properties:
+      install_path: {type: string}
+      version: {type: string}
+      signal_port: {type: integer, default: 49100}
+      stream_port: {type: integer, default: 47998}
+      public_ip: {type: string}
+      gpu_index: {type: integer, default: 0}
+      kit_extra_args: {type: array, items: {type: string}}
+
+  visualization:
+    type: object
+    required: [vnc, novnc, webrtc_client]
+    properties:
+      vnc:
+        type: object
+        properties:
+          binary: {type: string}
+          display: {type: string}
+          port: {type: integer}
+          geometry: {type: string}
+          extra_args: {type: array, items: {type: string}}
+      novnc:
+        type: object
+        properties:
+          path: {type: string}
+          websockify: {type: string}
+          port: {type: integer}
+      webrtc_client:
+        type: object
+        properties:
+          path: {type: string}
+          cdp_port: {type: integer}
+          electron_flags: {type: array, items: {type: string}}
+          auto_connect_script: {type: string}
+
+  operations:
+    type: object
+    properties:
+      pid_dir: {type: string, default: "/home/zjf/.local/state/ray-isaac-deploy"}
+      log_dir: {type: string, default: "/home/zjf/.local/state/ray-isaac-deploy/logs"}
+      health_check_timeout: {type: integer, default: 120}
+      max_retries: {type: integer, default: 3}

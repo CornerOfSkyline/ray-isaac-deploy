@@ -1,0 +1,56 @@
+# Ray-Isaac-Deploy
+# Deployment toolkit for Ray 2.40.0 + Isaac Sim 6.2.0 on GPU cloud containers
+# via SSH TCP tunnels + noVNC visualization
+
+# Large binaries & caches
+*.zip
+*.tar.gz
+*.deb
+*.exe
+*.dmg
+*.whl
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+.venv/
+venv/
+
+# Ray
+/tmp/ray/
+
+# Isaac Sim
+isaac-sim-*/
+
+# GPU drivers
+NVIDIA-*/
+
+# Logs & runtime
+*.log
+logs/
+*.pid
+/tmp/isaacsim_logs/
+/tmp/startup_output.log
+
+# Secrets & keys
+*.pem
+*.key
+id_rsa*
+.ssh/
+*_token*
+*_secret*
+.env
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Large snapshots
+/tmp/*.json
+/tmp/webrtc_screenshot.jpg
