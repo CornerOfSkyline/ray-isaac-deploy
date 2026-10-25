@@ -173,16 +173,9 @@ if is_running "novnc"; then
     log "[2/5] noVNC already running (managed PID $(read_pid novnc))"
     novnc_bind=$(ss -tlnp 2>/dev/null | grep ':6006 ' | awk '{print $4}' | head -1)
     if [[ "${novnc_bind}" != "127.0.0.1:6006" ]]; then
-        warn "  noVNC binding: ${novnc_bind} (expected 127.0.0.1:6006) - restarting with correct bind"
-        # Restart with correct binding
-        old_novnc_pid
-        old_novnc_pid=$(read_pid "novnc")
-        kill -TERM "${old_novnc_pid}" 2>/dev/null || true
-        sleep 2
-        if kill -0 "${old_novnc_pid}" 2>/dev/null; then
-            kill -9 "${old_novnc_pid}" 2>/dev/null || true
-        fi
-        rm -f "$(pid_file novnc)"
+        warn "  noVNC binding: ${novnc_bind} (expected 127.0.0.1:6006)"
+        warn "  Run: bash /home/zjf/ray-isaac-deploy/linux/visualization/repair-novnc.sh"
+        warn "  to fix only noVNC without touching other services."
     fi
 fi
 

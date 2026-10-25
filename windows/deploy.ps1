@@ -61,13 +61,44 @@ function Invoke-SSH {
     if ($DryRun) { Write-Host "[DRYRUN] ssh -p $P ${U}@${Hn} $Cmd" -ForegroundColor Gray; return [SshResult]@{N=$Hn;EC=-1;Error='DryRun'} }
     $r=[SshResult]@{N=$Hn;EC=-1}
     try {
-        $psi=New-Object System.Diagnostics.ProcessStartInfo;$psi.FileName='ssh'
+        $psi=New-Object System.Diagnostics.ProcessStartInfo
+        $psi.FileName='ssh'
         $psi.Arguments="-p $P -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o ServerAliveInterval=15 ${U}@${Hn} $Cmd"
         $psi.UseShellExecute=$false;$psi.RedirectStandardOutput=$true;$psi.RedirectStandardError=$true;$psi.CreateNoWindow=$true
         $p=[System.Diagnostics.Process]::Start($psi)
-        $o=$p.StandardOutput.ReadToEnd();$e=$p.StandardError.ReadToEnd()
+        $sbOut=New-Object System.Text.StringBuilder;$sbErr=New-Object System.Text.StringBuilder
+        $oe=Register-ObjectEvent -InputObject $p -EventName OutputDataReceived -Action {$Event.MessageData.AppendLine($EventArgs.Data)} -MessageData $sbOut
+        $ee=Register-ObjectEvent -InputObject $p -EventName ErrorDataReceived -Action {$Event.MessageData.AppendLine($EventArgs.Data)} -MessageData $sbErr
+        $p.BeginOutputReadLine();$p.BeginErrorReadLine()
         if(-not $p.WaitForExit($T*1000)){$p.Kill();$r.TO=$true;$r.Error="Timeout ${T}s"}
-        $r.EC=$p.ExitCode;$r.Out=$o.Trim();$r.Err=$e.Trim();$p.Dispose()
+        Unregister-Event -SourceIdentifier $oe.Name -ErrorAction SilentlyContinue
+        Unregister-Event -SourceIdentifier $ee.Name -ErrorAction SilentlyContinue
+        $p.WaitForExit(2000)|Out-Null  # flush async buffers
+        $r.EC=$p.ExitCode;$r.Out=$sbOut.ToString().Trim();$r.Err=$sbErr.ToString().Trim();$p.Dispose()
+    }catch{$r.Error=$_.Exception.Message}
+    return $r
+}
+
+function Send-SSH {
+    param([string]$Hn,[int]$P,[string]$U,[string]$Script,[string]$Interpreter='bash',[int]$T=30)
+    if ($DryRun) { Write-Host "[DRYRUN] ssh ${U}@${Hn} $Interpreter -s << SCRIPT" -ForegroundColor Gray; return [SshResult]@{N=$Hn;EC=-1;Error='DryRun'} }
+    $r=[SshResult]@{N=$Hn;EC=-1}
+    try {
+        $psi=New-Object System.Diagnostics.ProcessStartInfo
+        $psi.FileName='ssh'
+        $psi.Arguments="-p $P -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o ServerAliveInterval=15 ${U}@${Hn} '$Interpreter -s'"
+        $psi.UseShellExecute=$false;$psi.RedirectStandardInput=$true;$psi.RedirectStandardOutput=$true;$psi.RedirectStandardError=$true;$psi.CreateNoWindow=$true
+        $p=[System.Diagnostics.Process]::Start($psi)
+        $sbOut=New-Object System.Text.StringBuilder;$sbErr=New-Object System.Text.StringBuilder
+        $oe=Register-ObjectEvent -InputObject $p -EventName OutputDataReceived -Action {$Event.MessageData.AppendLine($EventArgs.Data)} -MessageData $sbOut
+        $ee=Register-ObjectEvent -InputObject $p -EventName ErrorDataReceived -Action {$Event.MessageData.AppendLine($EventArgs.Data)} -MessageData $sbErr
+        $p.BeginOutputReadLine();$p.BeginErrorReadLine()
+        $p.StandardInput.WriteLine($Script);$p.StandardInput.Close()
+        if(-not $p.WaitForExit($T*1000)){$p.Kill();$r.TO=$true;$r.Error="Timeout ${T}s"}
+        Unregister-Event -SourceIdentifier $oe.Name -ErrorAction SilentlyContinue
+        Unregister-Event -SourceIdentifier $ee.Name -ErrorAction SilentlyContinue
+        $p.WaitForExit(2000)|Out-Null
+        $r.EC=$p.ExitCode;$r.Out=$sbOut.ToString().Trim();$r.Err=$sbErr.ToString().Trim();$p.Dispose()
     }catch{$r.Error=$_.Exception.Message}
     return $r
 }
