@@ -117,7 +117,6 @@ audit_unmanaged "isaacsim-webrtc" "webrtc-client"
 if is_running "xvnc"; then
     log "[1/5] Xvnc already running (managed PID $(read_pid xvnc))"
     # Verify VNC port is bound to loopback only
-    vnc_bind
     vnc_bind=$(ss -tlnp 2>/dev/null | grep ':5901 ' | awk '{print $4}' | head -1)
     if [[ "${vnc_bind}" != "127.0.0.1:5901" ]] && [[ "${vnc_bind}" != "[::1]:5901" ]]; then
         warn "  VNC binding: ${vnc_bind} (expected 127.0.0.1:5901)"
@@ -136,7 +135,6 @@ else
     sleep 3
 
     if verify_process "xvnc" "${XVNC_PID}" "Xvnc"; then
-        vnc_bind
         vnc_bind=$(ss -tlnp 2>/dev/null | grep ':5901 ' | awk '{print $4}' | head -1)
         if [[ "${vnc_bind}" =~ ^127\.0\.0\.1:5901$ ]]; then
             log "  Xvnc OK (PID ${XVNC_PID}, bound to 127.0.0.1:5901)"
@@ -153,7 +151,6 @@ fi
 # ============================================================
 if is_running "novnc"; then
     log "[2/5] noVNC already running (managed PID $(read_pid novnc))"
-    novnc_bind
     novnc_bind=$(ss -tlnp 2>/dev/null | grep ':6006 ' | awk '{print $4}' | head -1)
     if [[ "${novnc_bind}" != "127.0.0.1:6006" ]]; then
         warn "  noVNC binding: ${novnc_bind} (expected 127.0.0.1:6006) - restarting with correct bind"
@@ -178,7 +175,6 @@ if ! is_running "novnc"; then
     sleep 2
 
     if verify_process "novnc" "${NOVNC_PID}" ""; then
-        novnc_bind
         novnc_bind=$(ss -tlnp 2>/dev/null | grep ':6006 ' | awk '{print $4}' | head -1)
         if [[ "${novnc_bind}" == "127.0.0.1:6006" ]]; then
             log "  noVNC OK (PID ${NOVNC_PID}, 127.0.0.1:6006)"
@@ -207,7 +203,6 @@ else
     write_pid "${ISAAC_PID}" "isaac-sim"
 
     # Wait for app to fully load (not just port listening)
-    loaded
     loaded=false
     for i in $(seq 1 60); do
         sleep 2
@@ -228,7 +223,6 @@ fi
 if is_running "webrtc-client"; then
     log "[4/5] WebRTC Client already running (managed PID $(read_pid webrtc-client))"
     # Verify CDP is loopback-only
-    cdp_bind
     cdp_bind=$(ss -tlnp 2>/dev/null | grep ':9222 ' | awk '{print $4}' | head -1)
     if [[ -n "${cdp_bind}" ]] && [[ "${cdp_bind}" != "127.0.0.1:9222" ]]; then
         warn "  CDP binding: ${cdp_bind} (expected 127.0.0.1:9222)"
@@ -247,7 +241,6 @@ else
     write_pid "${CLIENT_PID}" "webrtc-client"
 
     sleep 8
-    cdp_ready
     cdp_ready=false
     for i in $(seq 1 10); do
         if curl -s --connect-timeout 2 "http://127.0.0.1:9222/json" >/dev/null 2>&1; then
@@ -259,7 +252,6 @@ else
 
     if verify_process "webrtc-client" "${CLIENT_PID}" "isaacsim-webrtc-streaming-client"; then
         if ${cdp_ready}; then
-            cdp_bind
             cdp_bind=$(ss -tlnp 2>/dev/null | grep ':9222 ' | awk '{print $4}' | head -1)
             log "  WebRTC Client OK (PID ${CLIENT_PID}, CDP ${cdp_bind})"
         else
