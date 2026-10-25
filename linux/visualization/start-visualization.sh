@@ -185,6 +185,7 @@ if ! is_running "novnc"; then
         127.0.0.1:6006 127.0.0.1:5901 > "${LOG_DIR}/novnc.log" 2>&1 &
     NOVNC_PID=$!
     write_pid "${NOVNC_PID}" "novnc"
+    save_identity "novnc" "${NOVNC_PID}"
     sleep 2
 
     if verify_process "novnc" "${NOVNC_PID}" ""; then
@@ -214,6 +215,7 @@ else
         > "${LOG_DIR}/isaac-stream.log" 2>&1 &
     ISAAC_PID=$!
     write_pid "${ISAAC_PID}" "isaac-sim"
+    save_identity "isaac-sim" "${ISAAC_PID}"
 
     # Wait for app to fully load (not just port listening)
     loaded=false
@@ -252,6 +254,7 @@ else
         > "${LOG_DIR}/webrtc-client.log" 2>&1 &
     CLIENT_PID=$!
     write_pid "${CLIENT_PID}" "webrtc-client"
+    save_identity "webrtc-client" "${CLIENT_PID}"
 
     sleep 8
     cdp_ready=false

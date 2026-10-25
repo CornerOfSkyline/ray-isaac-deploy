@@ -28,16 +28,22 @@ read_identity() {
 # Build current identity for a PID
 build_identity() {
     local pid="$1"
-    python3 -c "
+    python3 << EOF
 import json, os
-pid = int('${pid}')
-uid = int(open(f'/proc/{pid}/status').read().split('\nUid:')[1].split()[0]) if os.path.exists(f'/proc/{pid}/status') else 0
-start_time = int(open(f'/proc/{pid}/stat').read().split()[21]) if os.path.exists(f'/proc/{pid}/stat') else 0
-exe = os.readlink(f'/proc/{pid}/exe') if os.path.exists(f'/proc/{pid}/exe') else ''
-with open(f'/proc/{pid}/cmdline', 'rb') as f:
-    raw = f.read().decode().replace(chr(0), ' ').strip()[:500]
-print(json.dumps({'pid':pid, 'uid':uid, 'start_time':start_time, 'exe':exe, 'cmdline':raw}))
-" 2>/dev/null || echo '{}'
+pid = ${pid}
+try:
+    with open(f'/proc/{pid}/status') as f:
+        uid_line = [l for l in f if l.startswith('Uid:')][0]
+    uid = int(uid_line.split()[1])
+    with open(f'/proc/{pid}/stat') as f:
+        start_time = int(f.read().split()[21])
+    exe = os.readlink(f'/proc/{pid}/exe')
+    with open(f'/proc/{pid}/cmdline', 'rb') as f:
+        raw = f.read().decode().replace(chr(0), ' ').strip()[:500]
+    print(json.dumps({'pid':pid, 'uid':uid, 'start_time':start_time, 'exe':exe, 'cmdline':raw}))
+except Exception:
+    print('{}')
+EOF
 }
 
 # Compare two identity JSON strings; return 0 if ALL key fields match
