@@ -164,8 +164,14 @@ function Invoke-Verify {
     if($alive -lt 2){$script:ExitCode=3}
 
     if($Mode -eq 'active' -and $Force){
-        $scr=Get-Content(Join-Path $ProjectDir 'linux\ray\verify-cluster.sh')-Raw
-        $ar=Invoke-SSH -Hn $H.GPU_H -P $H.GPU_P -U $H.GPU_U -Cmd "bash -s" -T 90
+        $scrPath = Join-Path $ProjectDir 'tests\e2e\verify_ray_active.py'
+        if(Test-Path $scrPath){
+            $scr = Get-Content $scrPath -Raw
+            $ar = Invoke-SSH -Hn $H.GPU_H -P $H.GPU_P -U $H.GPU_U -Cmd "python3 -s" -T 120
+            # Use Send-SSH for proper stdin script transmission
+            $ar2 = Send-SSH -Hn $H.GPU_H -P $H.GPU_P -U $H.GPU_U -Script $scr -Interpreter 'python3' -T 120
+            if($ar2.Ok()){V 'Ray GPU verify' $true}else{V 'Ray GPU verify' $false "$($ar2.Err)"}
+        } else { V 'Ray verify script' $false 'script not found' }
     }
 
     $pr=S4090 "ss -tlnp 2>/dev/null" -T 10

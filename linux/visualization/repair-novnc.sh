@@ -27,30 +27,37 @@ read_identity() {
 # Build current identity for a PID
 build_identity() {
     local pid="$1"
-    local uid exe start_time cmdline
-    uid=$(awk '/^Uid:/{print $2}' "/proc/${pid}/status" 2>/dev/null || echo "0")
-    start_time=$(awk '{print $22}' "/proc/${pid}/stat" 2>/dev/null || echo "0")
-    exe=$(readlink -f "/proc/${pid}/exe" 2>/dev/null || echo "")
-    cmdline=$(tr '\0' ' ' < "/proc/${pid}/cmdline" 2>/dev/null | cut -c1-300 || echo "")
-    printf '{"pid":%s,"uid":%s,"start_time":%s,"exe":"%s","cmdline":"%s"}' \
-        "${pid}" "${uid}" "${start_time}" "${exe}" "${cmdline}"
+    python3 -c "
+import json, os
+pid = int('${pid}')
+uid = int(open(f'/proc/{pid}/status').read().split('\nUid:')[1].split()[0]) if os.path.exists(f'/proc/{pid}/status') else 0
+start_time = int(open(f'/proc/{pid}/stat').read().split()[21]) if os.path.exists(f'/proc/{pid}/stat') else 0
+exe = os.readlink(f'/proc/{pid}/exe') if os.path.exists(f'/proc/{pid}/exe') else ''
+with open(f'/proc/{pid}/cmdline', 'rb') as f:
+    raw = f.read().decode().replace(chr(0), ' ').strip()[:500]
+print(json.dumps({'pid':pid, 'uid':uid, 'start_time':start_time, 'exe':exe, 'cmdline':raw}))
+" 2>/dev/null || echo '{}'
 }
 
-# Compare two identity JSON strings; return 0 if key fields match
+# Compare two identity JSON strings; return 0 if ALL key fields match
 identity_matches() {
     local saved="$1" current="$2"
-    local s_pid s_uid s_start c_pid c_uid c_start
-    s_pid=$(echo "${saved}"    | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('pid',''))" 2>/dev/null || echo "")
-    s_uid=$(echo "${saved}"    | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('uid',''))" 2>/dev/null || echo "")
-    s_start=$(echo "${saved}"  | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('start_time',''))" 2>/dev/null || echo "")
-    c_pid=$(echo "${current}"  | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('pid',''))" 2>/dev/null || echo "")
-    c_uid=$(echo "${current}"  | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('uid',''))" 2>/dev/null || echo "")
-    c_start=$(echo "${current}"| python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('start_time',''))" 2>/dev/null || echo "")
-    [[ "${s_pid}" == "${c_pid}" ]] || return 1
-    [[ "${s_uid}" == "${c_uid}" ]] || return 1
-    [[ "${s_start}" == "${c_start}" ]] || return 1
-    return 0
+    python3 -c "
+import json, sys
+s = json.loads(sys.argv[1])
+c = json.loads(sys.argv[2])
+for field in ('pid','uid','start_time','exe','cmdline'):
+    sv = str(s.get(field,''))
+    cv = str(c.get(field,''))
+    if sv != cv:
+        sys.exit(1)
+sys.exit(0)
+" "${saved}" "${current}" 2>/dev/null
 }
+
+# Kill with identity verification before each signal
+safe_kill() {
+    local pid="$1" saved_identity="$2" signal="${3:-TERM}"
 
 # Kill with identity verification before each signal
 safe_kill() {
@@ -269,6 +276,57 @@ run_apply() {
 }
 
 # ============================================================
+# ADOPT MODE (--adopt)
+# ============================================================
+run_adopt() {
+    log "=== noVNC Adoption ==="
+
+    local pids
+    pids=$(ss -tlnp 2>/dev/null | grep ':6006 ' | grep -oP 'pid=\d+' | cut -d= -f2 || true)
+    if [[ -z "${pids}" ]]; then
+        die "No process listening on port 6006"
+    fi
+    local pid_count
+    pid_count=$(echo "${pids}" | wc -w)
+    if [[ ${pid_count} -gt 1 ]]; then
+        die "Multiple processes on port 6006: ${pids}. Manual investigation required."
+    fi
+
+    local pid="${pids}"
+    log "Adopting PID ${pid} on port 6006..."
+
+    local identity cmdline exe
+    identity=$(build_identity "${pid}")
+    exe=$(echo "${identity}" | python3 -c "import json,sys;print(json.load(sys.stdin).get('exe',''))" 2>/dev/null || "")
+    cmdline=$(echo "${identity}" | python3 -c "import json,sys;print(json.load(sys.stdin).get('cmdline',''))" 2>/dev/null || "")
+    log "Identity: ${identity}"
+
+    if [[ "${exe}" != *"python"* ]] && [[ "${cmdline}" != *"websockify"* ]]; then
+        die "PID ${pid} does not appear to be websockify"
+    fi
+    if [[ "${cmdline}" != *"6006"* ]]; then
+        die "PID ${pid} cmdline does not reference port 6006"
+    fi
+
+    local existing
+    existing=$(read_pid "novnc")
+    if [[ -n "${existing}" ]] && [[ "${existing}" != "${pid}" ]]; then
+        if kill -0 "${existing}" 2>/dev/null; then
+            die "Existing managed noVNC PID ${existing} still running. Cannot adopt another."
+        fi
+        warn "Stale PID file for ${existing} - cleaning up"
+        rm -f "$(pid_file novnc)" "$(identity_file novnc)"
+    fi
+
+    echo "${pid}" > "$(pid_file novnc)"
+    echo "${identity}" > "$(identity_file novnc)"
+    log "Adoption SUCCESS: PID ${pid} registered as managed noVNC (NO signal sent)"
+    log "  UID=$(echo "${identity}"|python3 -c "import json,sys;print(json.load(sys.stdin).get('uid',''))" 2>/dev/null)"
+    log "  EXE=${exe}"
+    log "  Run 'bash $0 --apply' to restart with 127.0.0.1:6006 binding."
+}
+
+# ============================================================
 # Main
 # ============================================================
 case "${1:-}" in
@@ -277,13 +335,17 @@ case "${1:-}" in
         echo ""
         run_apply
         ;;
+    --adopt)
+        run_adopt
+        ;;
     audit|status|"")
         run_audit
         ;;
     *)
-        echo "Usage: $0 [--apply]" >&2
-        echo "  (no args)  Audit mode: inspect only, no changes" >&2
-        echo "  --apply    Apply mode: controlled repair (requires authorization)" >&2
+        echo "Usage: $0 [--apply|--adopt]" >&2
+        echo "  (no args)   Audit mode: inspect only, no changes" >&2
+        echo "  --adopt     Adopt current 6006 listener as managed (no restart)" >&2
+        echo "  --apply     Apply mode: controlled restart (requires prior adoption)" >&2
         exit 2
         ;;
 esac
