@@ -77,19 +77,15 @@ fingerprint_process() {
 }
 
 # --- X11 lock safety ---
-clean_x11_locks() {
-    # Only remove X11 lock if we have a managed Xvnc PID and it's not running
-    local xvnc_pid
-    xvnc_pid=$(read_pid "xvnc")
-    if [[ -n "${xvnc_pid}" ]] && ! kill -0 "${xvnc_pid}" 2>/dev/null; then
-        log "  Managed Xvnc (PID ${xvnc_pid}) is stopped, cleaning lock files"
-        rm -f /tmp/.X1-lock /tmp/.X11-unix/X1 2>/dev/null || true
-    elif ! pgrep -x Xvnc >/dev/null 2>&1; then
-        log "  No Xvnc processes running, cleaning lock files"
-        rm -f /tmp/.X1-lock /tmp/.X11-unix/X1 2>/dev/null || true
-    else
-        # Xvnc is running but not managed by us - don't touch locks
-        warn "  Unmanaged Xvnc detected - leaving X11 locks untouched"
+# Locks are NEVER automatically deleted. If a lock conflict exists, report
+# it and provide manual recovery steps. This avoids accidentally removing
+# locks belonging to unmanaged X servers.
+report_x11_lock_conflict() {
+    if [[ -f /tmp/.X1-lock ]] || [[ -S /tmp/.X11-unix/X1 ]]; then
+        warn "  X11 lock files exist for display :1"
+        warn "  If you are CERTAIN no X server is using :1, manually run:"
+        warn "    rm -f /tmp/.X1-lock /tmp/.X11-unix/X1"
+        warn "  Otherwise, use a different display number."
     fi
 }
 
@@ -142,7 +138,7 @@ if is_running "xvnc"; then
     fi
 else
     log "[1/5] Starting Xvnc :1..."
-    clean_x11_locks
+    report_x11_lock_conflict
     export LD_LIBRARY_PATH="/home/zjf/tigervnc/usr/lib:${LD_LIBRARY_PATH:-}"
 
     nohup /home/zjf/tigervnc/usr/bin/Xvnc :1 \

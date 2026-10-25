@@ -153,19 +153,21 @@ stop_service "novnc"
 sleep 1
 stop_service "xvnc"
 
-# Clean X11 locks ONLY if our managed xvnc is stopped AND no Xvnc remains
-MANAGED_STOPPED=true
-xvnc_pid=$(read_pid "xvnc")
-if [[ -n "${xvnc_pid}" ]] && kill -0 "${xvnc_pid}" 2>/dev/null; then
-    MANAGED_STOPPED=false
-fi
-if ${MANAGED_STOPPED} && ! pgrep -x Xvnc >/dev/null 2>&1; then
-    log "  No Xvnc processes - cleaning X11 lock files"
-    rm -f /tmp/.X1-lock /tmp/.X11-unix/X1 2>/dev/null || true
-elif ! ${MANAGED_STOPPED}; then
-    warn "  Managed Xvnc still running (PID ${xvnc_pid}) - leaving X11 locks"
-else
-    warn "  Unmanaged Xvnc detected - leaving X11 locks untouched"
+# Report X11 locks if they exist; NEVER auto-delete
+if [[ -f /tmp/.X1-lock ]] || [[ -S /tmp/.X11-unix/X1 ]]; then
+    MANAGED_STOPPED=true
+    xvnc_pid=$(read_pid "xvnc")
+    if [[ -n "${xvnc_pid}" ]] && kill -0 "${xvnc_pid}" 2>/dev/null; then
+        MANAGED_STOPPED=false
+    fi
+    if ${MANAGED_STOPPED} && ! pgrep -x Xvnc >/dev/null 2>&1; then
+        warn "  X11 lock files present but no Xvnc running"
+        warn "  To clean up manually: rm -f /tmp/.X1-lock /tmp/.X11-unix/X1"
+    elif ! ${MANAGED_STOPPED}; then
+        warn "  Managed Xvnc still running (PID ${xvnc_pid}) - X11 locks in use"
+    else
+        warn "  Unmanaged Xvnc detected - X11 locks left untouched"
+    fi
 fi
 
 # ============================================================

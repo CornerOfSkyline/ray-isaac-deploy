@@ -135,6 +135,33 @@ fi
 rm -rf "${T5}"
 
 # ============================================================
+# Test 6: SIGTERM timeout → SIGKILL with re-verification
+# ============================================================
+echo "=== Test 6: SIGTERM Ignored → SIGKILL ==="
+T6=$(mktemp -d)
+# Start process that ignores SIGTERM
+bash -c 'trap "" TERM; sleep 86400' &
+M6=$!
+setup_pid "${T6}" xvnc "${M6}"
+setup_id  "${T6}" xvnc "${M6}"
+
+# Run stop — should timeout on SIGTERM after 15s, re-verify, then SIGKILL
+run_stop "${T6}" || true
+
+if kill -0 "${M6}" 2>/dev/null; then
+    fail "Process still alive after SIGKILL"
+    kill -9 "${M6}" 2>/dev/null || true
+else
+    pass "SIGKILL succeeded after SIGTERM ignored"
+fi
+if is_cleaned "${T6}" xvnc; then
+    pass "Identity cleaned after successful SIGKILL"
+else
+    fail "Identity not cleaned after SIGKILL"
+fi
+rm -rf "${T6}"
+
+# ============================================================
 echo ""
 echo "=== Results: ${passed} passed, ${failed} failed ==="
 [[ ${failed} -eq 0 ]] && exit 0 || exit 1
