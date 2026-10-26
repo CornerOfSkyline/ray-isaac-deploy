@@ -99,14 +99,14 @@ function Invoke-SSH {
 
 function Send-SSH {
     param([string]$HostName,[int]$Port,[string]$User,[string]$ScriptContent,[string]$Interpreter='python3',[int]$Timeout=30)
-    if ($DryRun) { Write-Host "[DRYRUN] ssh ${User}@${HostName} $Interpreter -s << SCRIPT" -ForegroundColor Gray; return [SshResult]@{N=$HostName;EC=-1;Error='DryRun'} }
+    if ($DryRun) { Write-Host "[DRYRUN] ssh ${User}@${HostName} python3 - << SCRIPT" -ForegroundColor Gray; return [SshResult]@{N=$HostName;EC=-1;Error='DryRun'} }
     $result = [SshResult]@{N=$HostName;EC=-1}
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
     try {
         $psi = New-Object System.Diagnostics.ProcessStartInfo
         $psi.FileName = 'ssh'
-        # NO -n: stdin needed for script transmission
-        $psi.Arguments = "-T -p $Port $sshOpts ${User}@${HostName} '$Interpreter -s'"
+        # NO -n: stdin needed for script; python3 - reads from stdin (no -s, no quoting)
+        $psi.Arguments = "-T -p $Port $sshOpts ${User}@${HostName} python3 -"
         $psi.UseShellExecute = $false; $psi.RedirectStandardInput = $true; $psi.RedirectStandardOutput = $true; $psi.RedirectStandardError = $true; $psi.CreateNoWindow = $true
         $proc = [System.Diagnostics.Process]::Start($psi)
         $outTask = $proc.StandardOutput.ReadToEndAsync()
