@@ -191,7 +191,13 @@ ray.shutdown()
     # Ports
     Write-Host "`n--- Ports ---" -ForegroundColor Yellow
     $pr=S4090 "for p in $($H.SigP) $($H.VPort) $($H.NPort) $($H.CDP);do ss -tlnp 2>/dev/null|grep -q `":`$p `"&&echo `$p:OK||echo `$p:MISSING;done" -T 10
-    $pr.Out -split "`n"|%{if($_ -match '^(\d+):(\w+)'){WC "Port $($Matches[1])" $(if($Matches[2]-eq'OK'){'PASS'}else{'FAIL'})}}
+    $pr.Out -split "`n"|%{
+        if($_ -match '^(\d+):(\w+)'){
+            $s = if($Matches[2]-eq'OK'){'PASS'}else{'FAIL'}
+            WC "Port $($Matches[1])" $s
+            if($s -eq 'FAIL'){$script:ExitCode=4}
+        }
+    }
 
     # WebRTC
     Write-Host "`n--- WebRTC ---" -ForegroundColor Yellow
@@ -205,7 +211,7 @@ ray.shutdown()
 # === Verify (v1.1.1: Ray query via stdin) ===
 function Invoke-Verify {
     Write-Host "`n=== Verify ($Mode) ===" -ForegroundColor Cyan
-    $fail=0; $total=0
+    $script:total = 0; $script:fail = 0
     function V { param([string]$N,[bool]$C) $script:total++; if($C){WC $N 'PASS'}else{WC $N 'FAIL';$script:fail++;$script:ExitCode=1} }
     if($Mode -eq 'active' -and -not $Force){Write-Host "Active verify requires -Force" -ForegroundColor Red;exit 10}
 
@@ -236,10 +242,14 @@ ray.shutdown()
     }
 
     $pr=S4090 "ss -tlnp 2>/dev/null" -T 10
-    $open=$pr.Out -split "`n"
-    foreach($p in @($H.VPort,$H.NPort,$H.SigP)){V "Port $p" ($open-match":$p ")}
+    $prOut = if($pr.Ok()){$pr.Out}else{''}
+    foreach($p in @($H.VPort,$H.NPort,$H.SigP)){
+        $portOk = $pr.Ok() -and ($prOut -match ":${p} ")
+        V "Port $p" $portOk
+        if(-not $portOk){$script:ExitCode=4}
+    }
     V "Tunnel :$($H.BPort)" (!!(netstat -ano 2>$null|Select-String "$($H.BPort).*LISTEN"))
-    Write-Host "`n  Verified: $($total-$fail)/$total passed" -ForegroundColor $(if($fail-eq0){'Green'}else{'Yellow'})
+    Write-Host "`n  Verified: $($script:total-$script:fail)/$($script:total) passed" -ForegroundColor $(if($script:fail-eq0){'Green'}else{'Yellow'})
 }
 
 # === Dispatch ===
