@@ -1,5 +1,9 @@
 # Ray-Isaac-Deploy Operations Manual
 
+> **Complete Chinese deployment and operation handbook:** [Ray–Isaac–Deploy v1.1.1 完整部署与使用手册](USER_GUIDE_zh_CN.md). Covers new Windows/A800/4090 machines, manual component startup, SSH/Ray tunnels, visualization, PID safety, and recovery.
+>
+> **Safety:** The examples below are legacy quick commands. On an existing running system, check status and managed PID records before using full-stack start/stop actions. For normal Windows use, run from repository root: `./windows/deploy.ps1` (PowerShell: `.\windows\deploy.ps1`).
+
 ## Daily Operations
 
 ### Check Status
